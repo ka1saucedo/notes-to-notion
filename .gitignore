@@ -1,0 +1,22 @@
+# Local config and secrets
+config.toml
+.env
+*.env
+token*.json
+
+# State (fingerprints only, but still yours)
+state/
+pending.json
+state.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# macOS
+.DS_Store

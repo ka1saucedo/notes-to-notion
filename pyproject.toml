@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notes-to-notion"
+version = "0.1.0"
+description = "Your notes app is the interface, Notion is the system, an AI agent is the translator."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Kai Saucedo" }]
+keywords = ["notion", "apple-notes", "ai-agent", "productivity", "llm", "ollama"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Topic :: Office/Business",
+]
+dependencies = []
+
+[project.optional-dependencies]
+calendar = ["google-api-python-client>=2.0", "google-auth>=2.0"]
+certifi = ["certifi"]
+
+[project.scripts]
+n2n = "notes_to_notion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

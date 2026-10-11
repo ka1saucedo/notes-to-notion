@@ -1,0 +1,67 @@
+# notes-to-notion config
+# Secrets never go in this file. Set them as environment variables:
+#   export NOTION_API_KEY=...        (Notion internal integration token)
+#   export ANTHROPIC_API_KEY=...     (or OPENAI_API_KEY; Ollama needs none)
+
+[notes]
+account = "iCloud"                 # Apple Notes account to read
+days = 30                          # lookback window; 30 is the hard maximum
+skip_folders = ["Recently Deleted"]
+state_dir = "~/.local/state/notes-to-notion"
+
+[ai]
+provider = "anthropic"             # anthropic | openai | ollama
+model = ""                         # REQUIRED: a current model id for your provider
+# base_url = ""                    # OpenAI-compatible server (LM Studio, vLLM, OpenRouter) or Ollama host
+# api_key_env = ""                 # override the env var name for the key
+temperature = 0.2
+
+[notion]
+api_key_env = "NOTION_API_KEY"
+inbound_data_source_id = ""        # filled in for you by `n2n setup-notion`
+tracker_data_source_id = ""        # optional: where Approved items get filed
+assignee_user_id = ""              # optional: Notion user id to assign filed tasks to
+
+[taxonomy]
+timezone = "America/Los_Angeles"   # IANA name, e.g. Pacific/Honolulu, America/New_York
+categories = ["Work", "School", "Personal", "Errands", "Side Project"]
+default_category = "Personal"
+task_types = ["Study", "Software", "Content", "Admin", "Other"]
+
+[taxonomy.category_hints]          # optional: teach the translator your categories
+# "School" = "classes, problem sets, exams"
+# "Side Project" = "anything I'm building on nights and weekends"
+
+[filters]
+# Lines containing these words are dropped ON YOUR MAC, before anything is sent to the AI provider.
+skip_keywords = []
+# Plain-English description of what the AI should also skip:
+skip_description = ""              # e.g. "anything about my day job"
+
+[translator]
+extra_rules = ""
+
+[translator.expansions]            # optional shorthand the translator should expand
+# pset = "Problem Set"
+# dr = "doctor"
+
+[tracker]
+# Column names in your existing task database. Set any to "" to leave it out.
+title = "Task name"
+category = "Category"
+priority = "Priority"
+effort = "Effort level"
+task_type = "Task type"
+due_date = "Due date"
+target_finish = "Target finish"
+description = "Description"
+status = "Status"
+status_type = "status"             # "status" or "select", matching that column's type
+status_value = "Not started"
+assignee = "Assignee"
+
+[calendar]
+provider = "none"                  # none | google  (google needs: pip install "notes-to-notion[calendar]")
+google_token_file = ""
+calendar_id = "primary"
+event_minutes = 60
