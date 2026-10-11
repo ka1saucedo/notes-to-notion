@@ -2,6 +2,8 @@
 
 I turned my notes app into the interface between my messy thoughts and my organized Notion, with an AI agent as the translator.
 
+> **Status:** v0.1, early. Built from the pipeline I run every day; the open-source version is tested on sample notes. Issues and PRs welcome.
+
 When my boss is mid-sentence, I'm not opening Notion and picking a database. I'm typing `pset 4 due thurs!!` into Apple Notes with my thumbs. This tool reads what I wrote, cleans it up, figures out what it is (task, event, contact, idea), and files it into a Notion review queue. I approve it with one click and it lands in my real task tracker and calendar.
 
 ```
