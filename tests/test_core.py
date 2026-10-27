@@ -356,6 +356,35 @@ class TestHTTP(unittest.TestCase):
                 self.assertRaises(HTTPError):
             request_json("GET", "http://localhost:1/x")
 
+    def http_error(self, code, headers=None):
+        return urllib.error.HTTPError("http://localhost:1/x", code, "err", headers or {},
+                                      io.BytesIO(b"busy"))
+
+    def test_retries_rate_limits_and_server_errors_with_backoff(self):
+        answers = [self.http_error(503), self.http_error(429, {"Retry-After": "7"}),
+                   self.http_error(500), self.reply(b'{"ok": 1}')]
+        sleeps = []
+        with mock.patch("urllib.request.urlopen", side_effect=answers), \
+                mock.patch("notes_to_notion.http._sleep", side_effect=sleeps.append):
+            self.assertEqual(request_json("GET", "http://localhost:1/x"), {"ok": 1})
+        self.assertEqual(sleeps, [1.0, 7.0, 4.0])
+
+    def test_gives_up_after_the_last_retry(self):
+        answers = [self.http_error(502) for _ in range(4)]
+        with mock.patch("urllib.request.urlopen", side_effect=answers) as uo, \
+                mock.patch("notes_to_notion.http._sleep") as sleep, \
+                self.assertRaises(HTTPError) as ctx:
+            request_json("GET", "http://localhost:1/x")
+        self.assertEqual((uo.call_count, sleep.call_count), (4, 3))
+        self.assertEqual(str(ctx.exception), "GET http://localhost:1/x -> HTTP 502: busy")
+
+    def test_client_errors_are_not_retried(self):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.http_error(400)]) as uo, \
+                mock.patch("notes_to_notion.http._sleep") as sleep, self.assertRaises(HTTPError):
+            request_json("GET", "http://localhost:1/x")
+        self.assertEqual(uo.call_count, 1)
+        sleep.assert_not_called()
+
 
 class TestCLI(unittest.TestCase):
     """main() end to end on the sample notes, with no network and a throwaway state dir."""
