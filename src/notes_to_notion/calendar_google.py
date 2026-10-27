@@ -5,10 +5,15 @@ Install the extra (`pip install "notes-to-notion[calendar]"`) and point
 """
 import os
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from .config import Config
+from .models import Row
 
-def service(cfg: dict):
+
+def service(cfg: Config) -> Any:
+    """An authorized Calendar API client. The Google client library is untyped, hence Any."""
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -23,7 +28,7 @@ def service(cfg: dict):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def event_body(cfg: dict, row: dict) -> dict | None:
+def event_body(cfg: Config, row: Row) -> dict[str, Any] | None:
     when = row["event_time"] or row["due_date"]
     if not when:
         return None
@@ -42,9 +47,9 @@ def event_body(cfg: dict, row: dict) -> dict | None:
             "end": {"date": (day + timedelta(days=1)).strftime("%Y-%m-%d")}}
 
 
-def create_event(svc, cfg: dict, row: dict) -> str:
+def create_event(svc: Any, cfg: Config, row: Row) -> str:
     body = event_body(cfg, row)
     if not body:
         return ""
     ev = svc.events().insert(calendarId=cfg["calendar"]["calendar_id"], body=body).execute()
-    return ev.get("id", "")
+    return str(ev.get("id", ""))

@@ -2,9 +2,13 @@
 import copy
 import os
 import tomllib
+from typing import Any
 from zoneinfo import ZoneInfo
 
 DEFAULT_CONFIG_PATH = "~/.config/notes-to-notion/config.toml"
+
+# DEFAULTS with the user's TOML merged on top. The sections and keys are the ones listed below.
+Config = dict[str, Any]
 
 ITEM_TYPES = ["Task", "Event", "Reference", "Idea", "Contact", "Shopping", "Question"]
 PRIORITIES = ["High", "Medium", "Low"]
@@ -12,7 +16,7 @@ EFFORTS = ["Small", "Medium", "Large"]
 CONFIDENCE = ["High", "Medium", "Low"]
 STATUSES = ["Proposed", "Approved", "Filed", "Rejected"]
 
-DEFAULTS = {
+DEFAULTS: Config = {
     "notes": {
         "account": "iCloud",
         "days": 30,
@@ -75,7 +79,7 @@ class ConfigError(ValueError):
     pass
 
 
-def _merge(base: dict, over: dict) -> dict:
+def _merge(base: Config, over: Config) -> Config:
     out = copy.deepcopy(base)
     for k, v in (over or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -85,9 +89,9 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
-def load(path: str | None = None, require_file: bool = True) -> dict:
+def load(path: str | None = None, require_file: bool = True) -> Config:
     path = os.path.expanduser(path or os.environ.get("N2N_CONFIG") or DEFAULT_CONFIG_PATH)
-    user = {}
+    user: Config = {}
     if os.path.exists(path):
         with open(path, "rb") as f:
             user = tomllib.load(f)
@@ -99,7 +103,7 @@ def load(path: str | None = None, require_file: bool = True) -> dict:
     return cfg
 
 
-def validate(cfg: dict) -> None:
+def validate(cfg: Config) -> None:
     tax = cfg["taxonomy"]
     for name in tax["categories"] + tax["task_types"]:
         if "," in name:
@@ -125,7 +129,7 @@ def secret(env_name: str) -> str:
     return val
 
 
-def state_dir(cfg: dict) -> str:
-    d = os.path.expanduser(cfg["notes"]["state_dir"])
+def state_dir(cfg: Config) -> str:
+    d: str = os.path.expanduser(cfg["notes"]["state_dir"])
     os.makedirs(d, exist_ok=True)
     return d

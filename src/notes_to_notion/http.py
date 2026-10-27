@@ -3,13 +3,16 @@ import json
 import ssl
 import urllib.error
 import urllib.request
+from typing import Any
+
+JsonObject = dict[str, Any]
 
 
 class HTTPError(RuntimeError):
     pass
 
 
-def _ssl_context():
+def _ssl_context() -> ssl.SSLContext:
     # Some Python installs (e.g. python.org builds on macOS) ship without a CA bundle.
     # Use certifi when it's installed; otherwise fall back to the system defaults.
     try:
@@ -20,8 +23,8 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
-def request_json(method: str, url: str, headers: dict | None = None, body=None,
-                 timeout: int = 90) -> dict:
+def request_json(method: str, url: str, headers: dict[str, str] | None = None,
+                 body: object = None, timeout: int = 90) -> JsonObject:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
     hdrs.update(headers or {})
@@ -35,4 +38,7 @@ def request_json(method: str, url: str, headers: dict | None = None, body=None,
         raise HTTPError(f"{method} {url} -> HTTP {e.code}: {detail}") from None
     except urllib.error.URLError as e:
         raise HTTPError(f"{method} {url} -> {e.reason}") from None
-    return json.loads(raw) if raw.strip() else {}
+    parsed = json.loads(raw) if raw.strip() else {}
+    if not isinstance(parsed, dict):
+        raise HTTPError(f"{method} {url} -> expected a JSON object, got {type(parsed).__name__}")
+    return parsed

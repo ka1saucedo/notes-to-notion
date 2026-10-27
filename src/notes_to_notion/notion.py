@@ -1,6 +1,9 @@
 """Notion: create the Inbound review database, file items as Proposed, promote Approved rows."""
+from typing import Self
+
 from . import config as C
-from .http import request_json
+from .http import JsonObject, request_json
+from .models import Item, Row
 
 API = "https://api.notion.com/v1"
 NOTION_VERSION = "2025-09-03"
@@ -20,15 +23,15 @@ class NotionError(RuntimeError):
     """Notion answered, but not with what we asked for."""
 
 
-def _sel(names):
+def _sel(names: list[str]) -> JsonObject:
     return {"select": {"options": [{"name": n} for n in names]}}
 
 
-def _rt(s, limit=1900):
+def _rt(s: str | None, limit: int = 1900) -> JsonObject:
     return {"rich_text": [{"text": {"content": (s or "")[:limit]}}]}
 
 
-def inbound_schema(cfg: dict) -> dict:
+def inbound_schema(cfg: C.Config) -> JsonObject:
     tax = cfg["taxonomy"]
     return {
         P_TITLE: {"title": {}},
@@ -48,19 +51,19 @@ def inbound_schema(cfg: dict) -> dict:
 
 
 class Notion:
-    def __init__(self, token: str):
+    def __init__(self, token: str) -> None:
         self.token = token
 
     @classmethod
-    def from_config(cls, cfg):
+    def from_config(cls, cfg: C.Config) -> Self:
         return cls(C.secret(cfg["notion"]["api_key_env"]))
 
-    def req(self, method, path, body=None):
+    def req(self, method: str, path: str, body: JsonObject | None = None) -> JsonObject:
         headers = {"Authorization": f"Bearer {self.token}", "Notion-Version": NOTION_VERSION}
         return request_json(method, f"{API}/{path}", body=body, headers=headers)
 
     # ---- setup ----
-    def create_inbound(self, parent_page_id: str, cfg: dict,
+    def create_inbound(self, parent_page_id: str, cfg: C.Config,
                        title: str = "Inbound") -> tuple[str, str]:
         r = self.req("POST", "databases", {
             "parent": {"type": "page_id", "page_id": parent_page_id},
@@ -73,39 +76,43 @@ class Notion:
         return r["id"], sources[0]["id"]
 
     # ---- ingest ----
-    def add_item(self, data_source_id: str, it: dict, source: str = "Apple Notes") -> str:
-        P = {P_TITLE: {"title": [{"text": {"content": it["name"][:200]}}]},
-             P_STATUS: {"select": {"name": "Proposed"}}}  # ingest only ever writes Proposed
+    def add_item(self, data_source_id: str, it: Item, source: str = "Apple Notes") -> str:
+        # Ingest only ever writes Proposed.
+        props: JsonObject = {P_TITLE: {"title": [{"text": {"content": it["name"][:200]}}]},
+                             P_STATUS: {"select": {"name": "Proposed"}}}
         if it.get("category"):
-            P[P_CATEGORY] = {"select": {"name": it["category"]}}
-        for key, prop in (("priority", P_PRIORITY), ("effort", P_EFFORT),
-                          ("item_type", P_ITEM_TYPE), ("confidence", P_CONFIDENCE)):
-            if it.get(key):
-                P[prop] = {"select": {"name": it[key]}}
+            props[P_CATEGORY] = {"select": {"name": it["category"]}}
+        selects = ((it.get("priority"), P_PRIORITY), (it.get("effort"), P_EFFORT),
+                   (it.get("item_type"), P_ITEM_TYPE), (it.get("confidence"), P_CONFIDENCE))
+        for value, prop in selects:
+            if value:
+                props[prop] = {"select": {"name": value}}
         if it.get("task_type"):
-            P[P_TASK_TYPE] = {"multi_select": [{"name": t} for t in it["task_type"]]}
-        dates = (("due_date", P_DUE), ("target_finish", P_TARGET), ("event_time", P_EVENT))
-        for key, prop in dates:
-            if it.get(key):
-                P[prop] = {"date": {"start": it[key]}}
-        P[P_NEEDS_CAL] = {"checkbox": bool(it.get("needs_calendar"))}
+            props[P_TASK_TYPE] = {"multi_select": [{"name": t} for t in it["task_type"]]}
+        dates = ((it.get("due_date"), P_DUE), (it.get("target_finish"), P_TARGET),
+                 (it.get("event_time"), P_EVENT))
+        for value, prop in dates:
+            if value:
+                props[prop] = {"date": {"start": value}}
+        props[P_NEEDS_CAL] = {"checkbox": bool(it.get("needs_calendar"))}
         if it.get("description"):
-            P[P_DESC] = _rt(it["description"])
-        P[P_SOURCE] = _rt(source)
+            props[P_DESC] = _rt(it["description"])
+        props[P_SOURCE] = _rt(source)
         if it.get("batch_id"):
-            P[P_BATCH] = _rt(it["batch_id"])
+            props[P_BATCH] = _rt(it["batch_id"])
         parent = {"type": "data_source_id", "data_source_id": data_source_id}
-        r = self.req("POST", "pages", {"parent": parent, "properties": P})
+        r = self.req("POST", "pages", {"parent": parent, "properties": props})
         if r.get("object") != "page":
             raise NotionError(f"Notion create failed for {it['name']!r}: {r.get('message', r)}")
-        return r["id"]
+        return str(r["id"])
 
     # ---- promote ----
-    def approved_rows(self, data_source_id: str) -> list[dict]:
-        out, cursor = [], None
+    def approved_rows(self, data_source_id: str) -> list[Row]:
+        out: list[Row] = []
+        cursor: str | None = None
         while True:
-            body = {"filter": {"property": P_STATUS, "select": {"equals": "Approved"}},
-                    "page_size": 100}
+            body: JsonObject = {"filter": {"property": P_STATUS, "select": {"equals": "Approved"}},
+                                "page_size": 100}
             if cursor:
                 body["start_cursor"] = cursor
             r = self.req("POST", f"data_sources/{data_source_id}/query", body)
@@ -116,9 +123,9 @@ class Notion:
             cursor = r.get("next_cursor")
         return sorted(out, key=lambda x: x["id"])
 
-    def create_tracker_task(self, cfg: dict, row: dict) -> str:
+    def create_tracker_task(self, cfg: C.Config, row: Row) -> str:
         t, n = cfg["tracker"], cfg["notion"]
-        props = {t["title"]: {"title": [{"text": {"content": row["name"][:200]}}]}}
+        props: JsonObject = {t["title"]: {"title": [{"text": {"content": row["name"][:200]}}]}}
         if t["status"]:
             props[t["status"]] = {t["status_type"]: {"name": t["status_value"]}}
         if t["category"] and row["category"]:
@@ -146,11 +153,11 @@ class Notion:
                                        "properties": props})
         if r.get("object") != "page":
             raise NotionError(f"Tracker create failed: {r.get('message', r)}")
-        return r.get("url", "")
+        return str(r.get("url", ""))
 
-    def mark_filed(self, row: dict, task_url: str = "", event_id: str = "") -> None:
+    def mark_filed(self, row: Row, task_url: str = "", event_id: str = "") -> None:
         desc = row["description"] + (f"\n→ Tracker: {task_url}" if task_url else "")
-        props = {P_STATUS: {"select": {"name": "Filed"}}, P_DESC: _rt(desc)}
+        props: JsonObject = {P_STATUS: {"select": {"name": "Filed"}}, P_DESC: _rt(desc)}
         if event_id:
             props[P_CAL_ID] = _rt(event_id)
         r = self.req("PATCH", f"pages/{row['id']}", {"properties": props})
@@ -158,41 +165,53 @@ class Notion:
             raise NotionError(f"Status update failed: {r.get('message', r)}")
 
 
-def _pv(p):
-    if not p:
+def _as_str(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _prop_text(prop: JsonObject | None) -> str:
+    """Plain text of a title, rich_text, select, status or date property ("" when empty)."""
+    if not prop:
         return ""
-    t = p["type"]
-    v = p.get(t)
-    if t in ("title", "rich_text"):
-        return "".join(x.get("plain_text", "") for x in v)
-    if t in ("select", "status"):
-        return v["name"] if v else ""
-    if t == "multi_select":
-        return [o["name"] for o in v]
-    if t == "date":
-        return v["start"] if v else ""
-    if t == "checkbox":
-        return bool(v)
+    kind = prop["type"]
+    value = prop.get(kind)
+    if kind in ("title", "rich_text"):
+        return "".join(x.get("plain_text", "") for x in value or [])
+    if kind in ("select", "status"):
+        return _as_str(value["name"]) if value else ""
+    if kind == "date":
+        return _as_str(value["start"]) if value else ""
     return ""
 
 
-def row_from_page(pg: dict) -> dict:
+def _prop_names(prop: JsonObject | None) -> list[str]:
+    """Option names of a multi_select property."""
+    if not prop or prop["type"] != "multi_select":
+        return []
+    return [_as_str(o["name"]) for o in prop["multi_select"]]
+
+
+def _prop_flag(prop: JsonObject | None) -> bool:
+    return bool(prop and prop["type"] == "checkbox" and prop["checkbox"])
+
+
+def row_from_page(pg: JsonObject) -> Row:
     props = pg["properties"]
 
-    def g(key):
-        return _pv(props.get(key))
+    def text(key: str) -> str:
+        return _prop_text(props.get(key))
 
     return {
-        "id": pg["id"], "url": pg.get("url", ""), "name": g(P_TITLE),
-        "item_type": g(P_ITEM_TYPE) or "Task", "category": g(P_CATEGORY),
-        "priority": g(P_PRIORITY) or "Medium", "effort": g(P_EFFORT),
-        "task_type": g(P_TASK_TYPE) or [], "due_date": g(P_DUE), "target_finish": g(P_TARGET),
-        "event_time": g(P_EVENT), "needs_calendar": bool(g(P_NEEDS_CAL)),
-        "description": g(P_DESC),
+        "id": pg["id"], "url": pg.get("url", ""), "name": text(P_TITLE),
+        "item_type": text(P_ITEM_TYPE) or "Task", "category": text(P_CATEGORY),
+        "priority": text(P_PRIORITY) or "Medium", "effort": text(P_EFFORT),
+        "task_type": _prop_names(props.get(P_TASK_TYPE)), "due_date": text(P_DUE),
+        "target_finish": text(P_TARGET), "event_time": text(P_EVENT),
+        "needs_calendar": _prop_flag(props.get(P_NEEDS_CAL)), "description": text(P_DESC),
     }
 
 
-def plan_for(row: dict, has_tracker: bool, has_calendar: bool) -> tuple[bool, bool]:
+def plan_for(row: Row, has_tracker: bool, has_calendar: bool) -> tuple[bool, bool]:
     """(make_task, make_event) for an approved row."""
     is_event = row["item_type"] == "Event"
     make_task = has_tracker and not is_event
