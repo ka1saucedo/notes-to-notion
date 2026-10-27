@@ -22,9 +22,34 @@ dependencies = []
 [project.optional-dependencies]
 calendar = ["google-api-python-client>=2.0", "google-auth>=2.0"]
 certifi = ["certifi"]
+dev = ["ruff==0.17.3", "mypy==2.4.0", "pytest==9.1.1"]
+
+[project.urls]
+Homepage = "https://github.com/ka1saucedo/notes-to-notion"
+Issues = "https://github.com/ka1saucedo/notes-to-notion/issues"
 
 [project.scripts]
 n2n = "notes_to_notion.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "SIM", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+# Optional imports: certifi and the Google Calendar client, which is only partly typed.
+module = ["certifi", "google.*", "googleapiclient.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "notes_to_notion.calendar_google"
+disallow_untyped_calls = false

@@ -4,14 +4,18 @@ Privacy model:
   * Read-only. Nothing in Apple Notes is ever edited or deleted.
   * Only notes modified in the last 30 days are read. The date filter runs *inside* Notes.app,
     so older notes are never transferred out of it.
-  * Local state stores SHA-256 fingerprints of notes and lines, plus redacted titles. Never raw text.
+  * Local state stores SHA-256 fingerprints of notes and lines, plus redacted titles.
+    Never raw note text.
 """
 import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Iterable
 from datetime import datetime
+from typing import Any, TypedDict
 
+from .models import Change, Note
 from .redact import redact
 
 MAX_DAYS = 30
@@ -21,13 +25,22 @@ class NotesError(RuntimeError):
     pass
 
 
+class Entry(TypedDict):
+    """What the state file keeps per note: fingerprints and a redacted title, never the text."""
+
+    hash: str
+    lines: list[str]
+    title: str
+    seen: str
+
+
 def _applescript_str(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _script(days: int, account: str, with_body: bool) -> str:
-    # Batch-fetch each property per folder (one Apple Event per property). Per-note loops with string
-    # concatenation are O(n^2) in AppleScript and time out on large libraries.
+    # Batch-fetch each property per folder (one Apple Event per property). Per-note loops with
+    # string concatenation are O(n^2) in AppleScript and time out on large libraries.
     body_expr = (
         "plaintext of (every note of fld whose modification date > d)"
         if with_body
@@ -54,7 +67,9 @@ tell application "Notes"
         set end of isoC to my iso(x)
       end repeat
       set AppleScript's text item delimiters to "<<<I>>>"
-      set out to out & "<<<FOLDER>>>" & fname & "<<<S>>>" & (ids as text) & "<<<S>>>" & (nms as text) & "<<<S>>>" & (isoM as text) & "<<<S>>>" & (isoC as text) & "<<<S>>>" & (txs as text)
+      set out to out & "<<<FOLDER>>>" & fname & "<<<S>>>" & (ids as text)
+      set out to out & "<<<S>>>" & (nms as text) & "<<<S>>>" & (isoM as text)
+      set out to out & "<<<S>>>" & (isoC as text) & "<<<S>>>" & (txs as text)
       set AppleScript's text item delimiters to ""
     end if
   end repeat
@@ -72,17 +87,18 @@ end iso
 
 
 def read_apple_notes(days: int = MAX_DAYS, account: str = "iCloud", with_body: bool = True,
-                     skip_folders=("Recently Deleted",)) -> list[dict]:
+                     skip_folders: Iterable[str] = ("Recently Deleted",)) -> list[Note]:
     if days > MAX_DAYS:
         raise NotesError(f"Refused: {days} days exceeds the {MAX_DAYS}-day hard limit.")
-    p = subprocess.run(["osascript", "-e", _script(days, account, with_body)], capture_output=True, text=True)
+    p = subprocess.run(["osascript", "-e", _script(days, account, with_body)],
+                       capture_output=True, text=True)
     if p.returncode != 0:
         raise NotesError(p.stderr.strip() or "osascript failed (is this macOS with Notes.app?)")
     return _parse(p.stdout, with_body, set(skip_folders))
 
 
-def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
-    recs = []
+def _parse(raw: str, with_body: bool, skip_folders: set[str]) -> list[Note]:
+    recs: list[Note] = []
     for chunk in raw.split("<<<FOLDER>>>")[1:]:
         folder, ids, names, mods, creates, texts = chunk.split("<<<S>>>", 5)
         folder = folder.strip()
@@ -91,7 +107,7 @@ def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
         cols = [c.split("<<<I>>>") for c in (ids, names, mods, creates, texts)]
         if len({len(c) for c in cols}) != 1:
             raise NotesError(f"Field count mismatch in folder {folder!r}")
-        for i, nid, title, mod, cre, body in zip(range(len(cols[0])), *cols):
+        for nid, title, mod, cre, body in zip(*cols, strict=True):
             recs.append({
                 "id": nid.strip(), "folder": folder, "title": title.strip(),
                 "modified": mod.strip(), "created": cre.strip(),
@@ -100,11 +116,11 @@ def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
     return recs
 
 
-def read_fixture(path: str) -> list[dict]:
+def read_fixture(path: str) -> list[Note]:
     """Load notes from a JSON file instead of Apple Notes (demo, tests, other platforms)."""
     with open(os.path.expanduser(path)) as f:
         recs = json.load(f)
-    out = []
+    out: list[Note] = []
     for i, r in enumerate(recs):
         out.append({
             "id": r.get("id") or f"fixture-{i}", "folder": r.get("folder", "Notes"),
@@ -122,51 +138,57 @@ def fingerprint(text: str) -> str:
 class State:
     """Remembers which notes and lines have already been captured (fingerprints only)."""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: str) -> None:
         self.dir = os.path.expanduser(directory)
         os.makedirs(self.dir, exist_ok=True)
         self.state_path = os.path.join(self.dir, "state.json")
         self.pending_path = os.path.join(self.dir, "pending.json")
 
     @staticmethod
-    def _load(path):
+    def _load(path: str) -> dict[str, Any]:
         try:
             with open(path) as f:
-                return json.load(f)
+                data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
+        return data if isinstance(data, dict) else {}
 
-    def _save(self, path, data):
+    @staticmethod
+    def _save(path: str, data: dict[str, Any]) -> None:
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f, indent=0)
         os.replace(tmp, path)
 
     @staticmethod
-    def _entry(rec):
+    def _entry(rec: Note) -> Entry:
         return {"hash": fingerprint(rec["body"]),
                 "lines": sorted({fingerprint(line) for line in rec["body"].splitlines()}),
                 "title": redact(rec["title"]),
                 "seen": datetime.now().isoformat(timespec="minutes")}
 
-    def baseline(self, recs) -> int:
+    def baseline(self, recs: list[Note]) -> int:
         state = self._load(self.state_path)
         for r in recs:
             state[r["id"]] = self._entry(r)
         self._save(self.state_path, state)
         return len(recs)
 
-    def changes(self, recs, record: bool = True) -> list[dict]:
+    def changes(self, recs: list[Note], record: bool = True) -> list[Change]:
         """New or edited notes. For edited notes, only the lines added since last capture.
-        Writes pending.json (unless record=False); call commit() after the items were filed successfully."""
+
+        Writes pending.json (unless record=False); call commit() once the items were filed.
+        """
         state = self._load(self.state_path)
-        changed, pending = [], {}
+        changed: list[Change] = []
+        pending: dict[str, Entry] = {}
         for r in recs:
             prev = state.get(r["id"])
             if prev and prev["hash"] == fingerprint(r["body"]):
                 continue
             prev_lines = set(prev["lines"]) if prev else set()
-            added = [ln for ln in r["body"].splitlines() if ln.strip() and fingerprint(ln) not in prev_lines]
+            added = [ln for ln in r["body"].splitlines()
+                     if ln.strip() and fingerprint(ln) not in prev_lines]
             changed.append({
                 "id": r["id"], "folder": r["folder"], "title": redact(r["title"]),
                 "created": r["created"], "modified": r["modified"], "is_new": prev is None,
@@ -178,13 +200,18 @@ class State:
             self._save(self.pending_path, pending)
         return changed
 
-    def commit(self) -> int:
+    def commit(self, note_ids: Iterable[str] | None = None) -> int:
+        """Move pending notes into the seen state: all of them, or only `note_ids`."""
         state, pending = self._load(self.state_path), self._load(self.pending_path)
-        state.update(pending)
+        wanted = set(pending) if note_ids is None else set(note_ids)
+        done = {i: pending.pop(i) for i in list(pending) if i in wanted}
+        state.update(done)
         self._save(self.state_path, state)
-        if os.path.exists(self.pending_path):
+        if pending:
+            self._save(self.pending_path, pending)
+        elif os.path.exists(self.pending_path):
             os.remove(self.pending_path)
-        return len(pending)
+        return len(done)
 
     def has_pending(self) -> bool:
         return os.path.exists(self.pending_path) and os.path.getsize(self.pending_path) > 2
