@@ -64,6 +64,11 @@ def _offset(cfg, now=None) -> str:
     return f"{s[:3]}:{s[3:]}"
 
 
+def batch_id(cfg: dict, now: datetime | None = None) -> str:
+    """Local-time stamp shared by every item filed in one run."""
+    return (now or datetime.now(_tz(cfg))).strftime("%Y-%m-%dT%H:%M")
+
+
 def prefilter(notes: list[dict], cfg: dict) -> tuple[list[dict], int]:
     """Choose the lines to translate and drop skip-keyword lines locally.
 
@@ -227,10 +232,10 @@ def translate(cfg: dict, changed_notes: list[dict], provider=None, now: datetime
     """Full translation step. `provider(system, user) -> str` can be injected (tests, Hermes)."""
     notes_for_ai, skipped = prefilter(changed_notes, cfg)
     now = now or datetime.now(_tz(cfg))
-    batch_id = now.strftime("%Y-%m-%dT%H:%M")
+    batch = batch_id(cfg, now)
     if not notes_for_ai:
-        return {"items": [], "skipped_lines": skipped, "batch_id": batch_id}
+        return {"items": [], "skipped_lines": skipped, "batch_id": batch}
     system, user = build_messages(cfg, notes_for_ai, now)
     text = provider(system, user) if provider else call_provider(cfg, system, user)
-    items = clean_items(parse_items(text), cfg, batch_id, {n["id"] for n in notes_for_ai})
-    return {"items": items, "skipped_lines": skipped, "batch_id": batch_id}
+    items = clean_items(parse_items(text), cfg, batch, {n["id"] for n in notes_for_ai})
+    return {"items": items, "skipped_lines": skipped, "batch_id": batch}
