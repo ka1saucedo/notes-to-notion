@@ -1,5 +1,7 @@
 # notes-to-notion
 
+[![CI](https://github.com/ka1saucedo/notes-to-notion/actions/workflows/ci.yml/badge.svg)](https://github.com/ka1saucedo/notes-to-notion/actions/workflows/ci.yml)
+
 I turned my notes app into the interface between my messy thoughts and my organized Notion, with an AI agent as the translator.
 
 > **Status:** v0.1, early. Built from the pipeline I run every day; the open-source version is tested on sample notes. Issues and PRs welcome.
