@@ -11,11 +11,15 @@ TOKEN_RE = re.compile(
     r"|\b(?:sk|ntn|ghp|gho|xox[abp]|AKIA|pk_live|sk_live|secret)[-_][A-Za-z0-9_-]{12,}"
     r"|\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b"
 )
-# Lines that announce a secret ("password: ...", "pin: 1234"). The label is kept, the value dropped.
-SECRET_LINE_RE = re.compile(
-    r"(password|passwd|passcode|pass:|pwd|pw:|login:|pin:|cvv|ssn|secret|api key|token|routing|account #|acct)",
-    re.I,
-)
+# Words that only ever show up on a line that holds a credential. Any line with one is redacted:
+# a `label: value` line keeps its label, anything else is dropped whole.
+_STRONG = r"password|passwd|passcode|passphrase|pwd|cvv|ssn"
+# Everyday words that mean a credential only when used as a label ("pin: 1234", "token = ...").
+# "secret santa gift" and "spin: class at 6" are left alone.
+_WEAK = r"pass|pw|pin|login|secret|token|api[ _-]?key|routing|account ?#|acct"
+STRONG_RE = re.compile(rf"(?<!\w)(?:{_STRONG})(?!\w)", re.I)
+KEYWORD_RE = re.compile(rf"(?<!\w)(?:{_STRONG}|{_WEAK})(?!\w)", re.I)
+SEPARATOR_RE = re.compile(r"[:=]")
 PASSWORD_LIKE_RE = re.compile(r"^\S{8,40}$")
 
 REDACTED = "[REDACTED]"
@@ -39,10 +43,10 @@ def looks_like_password(line: str) -> bool:
 
 
 def redact_line(line: str) -> str:
-    if SECRET_LINE_RE.search(line):
-        label = re.split(r"[:=]", line, maxsplit=1)[0].strip()
+    if KEYWORD_RE.search(line) and SEPARATOR_RE.search(line):
+        label = SEPARATOR_RE.split(line, maxsplit=1)[0].strip()
         return f"{label}: {REDACTED}"
-    if looks_like_password(line):
+    if STRONG_RE.search(line) or looks_like_password(line):
         return REDACTED
     return TOKEN_RE.sub(REDACTED, line)
 
