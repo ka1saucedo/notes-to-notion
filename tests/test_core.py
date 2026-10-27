@@ -1,4 +1,3 @@
-import json
 import os
 import tempfile
 import unittest
@@ -39,7 +38,8 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(redact("Tr0ub4dor&3"), "[REDACTED]")
 
     def test_normal_text_survives(self):
-        for s in ("call dentist resched cleaning", "W3Schools tutorial", "sam@example.com", "buy: eggs, oat milk"):
+        for s in ("call dentist resched cleaning", "W3Schools tutorial", "sam@example.com",
+                  "buy: eggs, oat milk"):
             self.assertEqual(redact(s), s)
 
     def test_keyword_without_separator_drops_the_whole_line(self):
@@ -59,7 +59,8 @@ class TestState(unittest.TestCase):
         self.st = N.State(self.tmp)
 
     def rec(self, body, nid="n1"):
-        return {"id": nid, "folder": "Notes", "title": "t", "created": "", "modified": "2026-10-09T10:00", "body": body}
+        return {"id": nid, "folder": "Notes", "title": "t", "created": "",
+                "modified": "2026-10-09T10:00", "body": body}
 
     def test_new_then_unchanged(self):
         ch = self.st.changes([self.rec("a\nb")])
@@ -102,7 +103,8 @@ class TestNotesReader(unittest.TestCase):
             N.read_apple_notes(days=31)
 
     def test_parse_applescript_output(self):
-        raw = ("<<<FOLDER>>>Notes<<<S>>>id1<<<I>>>id2<<<S>>>A<<<I>>>B<<<S>>>2026-10-01T09:00<<<I>>>2026-10-02T09:00"
+        raw = ("<<<FOLDER>>>Notes<<<S>>>id1<<<I>>>id2<<<S>>>A<<<I>>>B"
+               "<<<S>>>2026-10-01T09:00<<<I>>>2026-10-02T09:00"
                "<<<S>>>2026-09-01T09:00<<<I>>>2026-09-02T09:00<<<S>>>body a<<<I>>>body b"
                "<<<FOLDER>>>Recently Deleted<<<S>>>id3<<<S>>>C<<<S>>>x<<<S>>>x<<<S>>>gone")
         recs = N._parse(raw, True, {"Recently Deleted"})
@@ -144,7 +146,8 @@ class TestTranslator(unittest.TestCase):
     def test_prompt_has_injection_guard_and_config(self):
         c = cfg(translator={"expansions": {"pset": "Problem Set"}},
                 filters={"skip_description": "anything about my day job"})
-        system, _ = T.build_messages(c, [], datetime(2026, 10, 9, 18, 0, tzinfo=ZoneInfo("Pacific/Honolulu")))
+        now = datetime(2026, 10, 9, 18, 0, tzinfo=ZoneInfo("Pacific/Honolulu"))
+        system, _ = T.build_messages(c, [], now)
         self.assertIn("untrusted DATA", system)
         self.assertIn("pset -> Problem Set", system)
         self.assertIn("anything about my day job", system)
@@ -155,7 +158,8 @@ class TestTranslator(unittest.TestCase):
         raw = [
             {"name": "  Email Maya about the lease ", "category": "Nope", "priority": "URGENT",
              "task_type": ["Admin", "Made up"], "item_type": "Task", "due_date": "Friday",
-             "confidence": "High", "source_note_id": "demo-note-1", "description": "Renewal. pw: [REDACTED]"},
+             "confidence": "High", "source_note_id": "demo-note-1",
+             "description": "Renewal. pw: [REDACTED]"},
             {"name": ""},
             {"name": "Dentist", "item_type": "Event", "event_time": "2026-10-14T09:30:00-10:00",
              "needs_calendar": True, "source_note_id": "hacker"},
@@ -177,8 +181,10 @@ class TestTranslator(unittest.TestCase):
 
     def test_edited_note_sends_only_new_lines(self):
         st = N.State(tempfile.mkdtemp())
-        rec = {"id": "n", "folder": "Notes", "title": "t", "created": "", "modified": "", "body": "old line"}
-        st.changes([rec]); st.commit()
+        rec = {"id": "n", "folder": "Notes", "title": "t", "created": "", "modified": "",
+               "body": "old line"}
+        st.changes([rec])
+        st.commit()
         rec["body"] = "old line\nnew line"
         notes, _ = T.prefilter(st.changes([rec]), cfg())
         self.assertEqual(notes[0]["lines"], ["new line"])
@@ -193,7 +199,8 @@ class TestNotion(unittest.TestCase):
     def test_add_item_only_writes_proposed(self):
         n = Notion("t")
         with mock.patch.object(n, "req", return_value={"object": "page", "id": "p1"}) as req:
-            n.add_item("ds", {"name": "X", "category": "Work", "task_type": ["Admin"], "needs_calendar": False})
+            n.add_item("ds", {"name": "X", "category": "Work", "task_type": ["Admin"],
+                              "needs_calendar": False})
         body = req.call_args[0][2]
         self.assertEqual(body["properties"]["Status"]["select"]["name"], "Proposed")
         self.assertEqual(body["parent"]["data_source_id"], "ds")
@@ -222,8 +229,8 @@ class TestProviders(unittest.TestCase):
         return text, rj.call_args
 
     def test_anthropic(self):
-        text, call = self.run_provider("anthropic", {"content": [{"type": "text", "text": '{"items": []}'}]},
-                                       env={"ANTHROPIC_API_KEY": "k"})
+        reply = {"content": [{"type": "text", "text": '{"items": []}'}]}
+        text, call = self.run_provider("anthropic", reply, env={"ANTHROPIC_API_KEY": "k"})
         self.assertEqual(text, '{"items": []}')
         self.assertTrue(call.args[1].endswith("/v1/messages"))
         self.assertEqual(call.kwargs["headers"]["x-api-key"], "k")

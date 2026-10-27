@@ -32,7 +32,8 @@ def inbound_schema(cfg: dict) -> dict:
     tax = cfg["taxonomy"]
     return {
         P_TITLE: {"title": {}},
-        P_STATUS: {"select": {"options": [{"name": n, "color": c} for n, c in STATUS_COLORS.items()]}},
+        P_STATUS: {"select": {"options": [{"name": n, "color": c}
+                                          for n, c in STATUS_COLORS.items()]}},
         P_CATEGORY: _sel(tax["categories"]),
         P_PRIORITY: _sel(C.PRIORITIES),
         P_EFFORT: _sel(C.EFFORTS),
@@ -55,11 +56,12 @@ class Notion:
         return cls(C.secret(cfg["notion"]["api_key_env"]))
 
     def req(self, method, path, body=None):
-        return request_json(method, f"{API}/{path}", body=body,
-                            headers={"Authorization": f"Bearer {self.token}", "Notion-Version": NOTION_VERSION})
+        headers = {"Authorization": f"Bearer {self.token}", "Notion-Version": NOTION_VERSION}
+        return request_json(method, f"{API}/{path}", body=body, headers=headers)
 
     # ---- setup ----
-    def create_inbound(self, parent_page_id: str, cfg: dict, title: str = "Inbound") -> tuple[str, str]:
+    def create_inbound(self, parent_page_id: str, cfg: dict,
+                       title: str = "Inbound") -> tuple[str, str]:
         r = self.req("POST", "databases", {
             "parent": {"type": "page_id", "page_id": parent_page_id},
             "title": [{"type": "text", "text": {"content": title}}],
@@ -82,7 +84,8 @@ class Notion:
                 P[prop] = {"select": {"name": it[key]}}
         if it.get("task_type"):
             P[P_TASK_TYPE] = {"multi_select": [{"name": t} for t in it["task_type"]]}
-        for key, prop in (("due_date", P_DUE), ("target_finish", P_TARGET), ("event_time", P_EVENT)):
+        dates = (("due_date", P_DUE), ("target_finish", P_TARGET), ("event_time", P_EVENT))
+        for key, prop in dates:
             if it.get(key):
                 P[prop] = {"date": {"start": it[key]}}
         P[P_NEEDS_CAL] = {"checkbox": bool(it.get("needs_calendar"))}
@@ -91,8 +94,8 @@ class Notion:
         P[P_SOURCE] = _rt(source)
         if it.get("batch_id"):
             P[P_BATCH] = _rt(it["batch_id"])
-        r = self.req("POST", "pages", {"parent": {"type": "data_source_id", "data_source_id": data_source_id},
-                                       "properties": P})
+        parent = {"type": "data_source_id", "data_source_id": data_source_id}
+        r = self.req("POST", "pages", {"parent": parent, "properties": P})
         if r.get("object") != "page":
             raise NotionError(f"Notion create failed for {it['name']!r}: {r.get('message', r)}")
         return r["id"]
@@ -101,7 +104,8 @@ class Notion:
     def approved_rows(self, data_source_id: str) -> list[dict]:
         out, cursor = [], None
         while True:
-            body = {"filter": {"property": P_STATUS, "select": {"equals": "Approved"}}, "page_size": 100}
+            body = {"filter": {"property": P_STATUS, "select": {"equals": "Approved"}},
+                    "page_size": 100}
             if cursor:
                 body["start_cursor"] = cursor
             r = self.req("POST", f"data_sources/{data_source_id}/query", body)
@@ -124,7 +128,8 @@ class Notion:
         if t["effort"] and row["effort"]:
             props[t["effort"]] = {"select": {"name": row["effort"]}}
         if t["task_type"]:
-            types = row["task_type"] or (["Other"] if "Other" in cfg["taxonomy"]["task_types"] else [])
+            fallback = ["Other"] if "Other" in cfg["taxonomy"]["task_types"] else []
+            types = row["task_type"] or fallback
             if types:
                 props[t["task_type"]] = {"multi_select": [{"name": x} for x in types]}
         if t["due_date"] and row["due_date"]:
@@ -132,7 +137,8 @@ class Notion:
         if t["target_finish"] and row["target_finish"]:
             props[t["target_finish"]] = {"date": {"start": row["target_finish"]}}
         if t["description"]:
-            props[t["description"]] = _rt(f'{row["description"]}\n\nFrom Inbound: {row["url"]}'.strip())
+            desc = f'{row["description"]}\n\nFrom Inbound: {row["url"]}'.strip()
+            props[t["description"]] = _rt(desc)
         if t["assignee"] and n["assignee_user_id"]:
             props[t["assignee"]] = {"people": [{"id": n["assignee_user_id"]}]}
         r = self.req("POST", "pages", {"parent": {"type": "data_source_id",
@@ -178,9 +184,10 @@ def row_from_page(pg: dict) -> dict:
 
     return {
         "id": pg["id"], "url": pg.get("url", ""), "name": g(P_TITLE),
-        "item_type": g(P_ITEM_TYPE) or "Task", "category": g(P_CATEGORY), "priority": g(P_PRIORITY) or "Medium",
-        "effort": g(P_EFFORT), "task_type": g(P_TASK_TYPE) or [], "due_date": g(P_DUE),
-        "target_finish": g(P_TARGET), "event_time": g(P_EVENT), "needs_calendar": bool(g(P_NEEDS_CAL)),
+        "item_type": g(P_ITEM_TYPE) or "Task", "category": g(P_CATEGORY),
+        "priority": g(P_PRIORITY) or "Medium", "effort": g(P_EFFORT),
+        "task_type": g(P_TASK_TYPE) or [], "due_date": g(P_DUE), "target_finish": g(P_TARGET),
+        "event_time": g(P_EVENT), "needs_calendar": bool(g(P_NEEDS_CAL)),
         "description": g(P_DESC),
     }
 
@@ -189,5 +196,6 @@ def plan_for(row: dict, has_tracker: bool, has_calendar: bool) -> tuple[bool, bo
     """(make_task, make_event) for an approved row."""
     is_event = row["item_type"] == "Event"
     make_task = has_tracker and not is_event
-    make_event = has_calendar and (is_event or row["needs_calendar"]) and bool(row["event_time"] or row["due_date"])
+    has_when = bool(row["event_time"] or row["due_date"])
+    make_event = has_calendar and (is_event or row["needs_calendar"]) and has_when
     return make_task, make_event

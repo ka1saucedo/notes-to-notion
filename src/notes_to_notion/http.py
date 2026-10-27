@@ -20,7 +20,8 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
-def request_json(method: str, url: str, headers: dict | None = None, body=None, timeout: int = 90) -> dict:
+def request_json(method: str, url: str, headers: dict | None = None, body=None,
+                 timeout: int = 90) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
     hdrs.update(headers or {})

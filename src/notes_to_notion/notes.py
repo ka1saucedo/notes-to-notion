@@ -4,7 +4,8 @@ Privacy model:
   * Read-only. Nothing in Apple Notes is ever edited or deleted.
   * Only notes modified in the last 30 days are read. The date filter runs *inside* Notes.app,
     so older notes are never transferred out of it.
-  * Local state stores SHA-256 fingerprints of notes and lines, plus redacted titles. Never raw text.
+  * Local state stores SHA-256 fingerprints of notes and lines, plus redacted titles.
+    Never raw note text.
 """
 import hashlib
 import json
@@ -26,8 +27,8 @@ def _applescript_str(s: str) -> str:
 
 
 def _script(days: int, account: str, with_body: bool) -> str:
-    # Batch-fetch each property per folder (one Apple Event per property). Per-note loops with string
-    # concatenation are O(n^2) in AppleScript and time out on large libraries.
+    # Batch-fetch each property per folder (one Apple Event per property). Per-note loops with
+    # string concatenation are O(n^2) in AppleScript and time out on large libraries.
     body_expr = (
         "plaintext of (every note of fld whose modification date > d)"
         if with_body
@@ -54,7 +55,9 @@ tell application "Notes"
         set end of isoC to my iso(x)
       end repeat
       set AppleScript's text item delimiters to "<<<I>>>"
-      set out to out & "<<<FOLDER>>>" & fname & "<<<S>>>" & (ids as text) & "<<<S>>>" & (nms as text) & "<<<S>>>" & (isoM as text) & "<<<S>>>" & (isoC as text) & "<<<S>>>" & (txs as text)
+      set out to out & "<<<FOLDER>>>" & fname & "<<<S>>>" & (ids as text)
+      set out to out & "<<<S>>>" & (nms as text) & "<<<S>>>" & (isoM as text)
+      set out to out & "<<<S>>>" & (isoC as text) & "<<<S>>>" & (txs as text)
       set AppleScript's text item delimiters to ""
     end if
   end repeat
@@ -75,7 +78,8 @@ def read_apple_notes(days: int = MAX_DAYS, account: str = "iCloud", with_body: b
                      skip_folders=("Recently Deleted",)) -> list[dict]:
     if days > MAX_DAYS:
         raise NotesError(f"Refused: {days} days exceeds the {MAX_DAYS}-day hard limit.")
-    p = subprocess.run(["osascript", "-e", _script(days, account, with_body)], capture_output=True, text=True)
+    p = subprocess.run(["osascript", "-e", _script(days, account, with_body)],
+                       capture_output=True, text=True)
     if p.returncode != 0:
         raise NotesError(p.stderr.strip() or "osascript failed (is this macOS with Notes.app?)")
     return _parse(p.stdout, with_body, set(skip_folders))
@@ -91,7 +95,7 @@ def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
         cols = [c.split("<<<I>>>") for c in (ids, names, mods, creates, texts)]
         if len({len(c) for c in cols}) != 1:
             raise NotesError(f"Field count mismatch in folder {folder!r}")
-        for i, nid, title, mod, cre, body in zip(range(len(cols[0])), *cols):
+        for nid, title, mod, cre, body in zip(*cols, strict=True):
             recs.append({
                 "id": nid.strip(), "folder": folder, "title": title.strip(),
                 "modified": mod.strip(), "created": cre.strip(),
@@ -158,7 +162,9 @@ class State:
 
     def changes(self, recs, record: bool = True) -> list[dict]:
         """New or edited notes. For edited notes, only the lines added since last capture.
-        Writes pending.json (unless record=False); call commit() after the items were filed successfully."""
+
+        Writes pending.json (unless record=False); call commit() once the items were filed.
+        """
         state = self._load(self.state_path)
         changed, pending = [], {}
         for r in recs:
@@ -166,7 +172,8 @@ class State:
             if prev and prev["hash"] == fingerprint(r["body"]):
                 continue
             prev_lines = set(prev["lines"]) if prev else set()
-            added = [ln for ln in r["body"].splitlines() if ln.strip() and fingerprint(ln) not in prev_lines]
+            added = [ln for ln in r["body"].splitlines()
+                     if ln.strip() and fingerprint(ln) not in prev_lines]
             changed.append({
                 "id": r["id"], "folder": r["folder"], "title": redact(r["title"]),
                 "created": r["created"], "modified": r["modified"], "is_new": prev is None,
