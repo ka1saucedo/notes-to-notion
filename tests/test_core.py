@@ -42,6 +42,16 @@ class TestRedact(unittest.TestCase):
         for s in ("call dentist resched cleaning", "W3Schools tutorial", "sam@example.com", "buy: eggs, oat milk"):
             self.assertEqual(redact(s), s)
 
+    def test_keyword_without_separator_drops_the_whole_line(self):
+        self.assertEqual(redact("my password is hunter22"), "[REDACTED]")
+        self.assertEqual(redact("todo: reset the netflix password hunter22"), "todo: [REDACTED]")
+
+    def test_everyday_words_only_count_as_a_label(self):
+        self.assertEqual(redact("secret santa gift"), "secret santa gift")
+        self.assertEqual(redact("spin: class at 6"), "spin: class at 6")
+        self.assertEqual(redact("pin: 1234"), "pin: [REDACTED]")
+        self.assertEqual(redact("api key = abc"), "api key: [REDACTED]")
+
 
 class TestState(unittest.TestCase):
     def setUp(self):
