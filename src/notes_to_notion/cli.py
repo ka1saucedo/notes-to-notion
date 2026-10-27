@@ -13,7 +13,7 @@ from . import config as C
 from . import notes as N
 from . import translator as T
 from .http import HTTPError
-from .models import Note
+from .models import Item, Note
 from .notion import Notion, NotionError, plan_for
 from .template import TEMPLATE
 
@@ -95,9 +95,18 @@ def cmd_run(a: argparse.Namespace) -> None:
         return
     ds = _inbound(cfg)
     notion = Notion.from_config(cfg)
+    by_note: dict[str, list[Item]] = {}
     for it in items:
+        by_note.setdefault(it["source_note_id"], []).append(it)
+    # Items the model did not tie to a note go first: if they fail, nothing is committed and the
+    # whole run is retried. Then each note is committed as soon as its items are filed, so a
+    # failure part-way through never re-files what already landed.
+    for it in by_note.pop("", []):
         notion.add_item(ds, it)
-    state.commit()  # only after every item was filed
+    for note in changed:
+        for it in by_note.get(note["id"], []):
+            notion.add_item(ds, it)
+        state.commit([note["id"]])
     if not items:
         print("Nothing worth filing in the new notes.")
         return
