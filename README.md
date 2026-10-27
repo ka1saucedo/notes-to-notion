@@ -145,7 +145,7 @@ n2n promote          # Approved rows → tracker + calendar
 n2n promote --dry-run
 ```
 
-Run it on a schedule with cron or launchd (every 30 minutes for `run`, hourly for `promote`). Notes.app needs the Mac awake; a missed tick just runs next time.
+Run it on a schedule with cron or launchd (every 30 minutes for `run`, hourly for `promote`). Notes.app needs the Mac awake; a missed tick just runs next time. If Notion fails part-way through a run, the notes whose items already landed are marked as seen and only the rest are retried on the next tick.
 
 **Filing into your existing tracker:** set `notion.tracker_data_source_id` and map your column names under `[tracker]`. Leave it empty and approved rows are simply marked `Filed`.
 

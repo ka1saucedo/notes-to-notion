@@ -113,6 +113,15 @@ class TestState(unittest.TestCase):
         self.assertEqual(self.st.baseline([self.rec("a"), self.rec("b", "n2")]), 2)
         self.assertEqual(self.st.changes([self.rec("a")]), [])
 
+    def test_commit_can_take_notes_one_at_a_time(self):
+        recs = [self.rec("a"), self.rec("b", "n2")]
+        self.st.changes(recs)
+        self.assertEqual(self.st.commit(["n1"]), 1)
+        self.assertTrue(self.st.has_pending())
+        self.assertEqual([c["id"] for c in self.st.changes(recs)], ["n2"])
+        self.assertEqual(self.st.commit(), 1)
+        self.assertFalse(self.st.has_pending())
+
 
 class TestNotesReader(unittest.TestCase):
     def test_refuses_more_than_30_days(self):
@@ -432,6 +441,30 @@ class TestCLI(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             cli.main(["--config", os.path.join(self.tmp, "nope.toml"), "dump"])
         self.assertTrue(str(ctx.exception.code).startswith("error: No config at "))
+
+    def test_run_commits_each_note_as_soon_as_its_items_are_filed(self):
+        def translate(cfg, system, user):  # one item per note the model was shown
+            notes = json.loads(user.split("Notes (JSON):\n", 1)[1])
+            items = [{"name": f"Item from {n['id']}", "source_note_id": n["id"]} for n in notes]
+            return json.dumps({"items": items})
+
+        fixture = os.path.join(self.tmp, "fixture")
+        down = HTTPError("POST https://api.notion.com/v1/pages -> HTTP 503: down")
+        with mock.patch.dict(os.environ, {"NOTION_API_KEY": "k"}), \
+                mock.patch("notes_to_notion.translator.call_provider", side_effect=translate):
+            with mock.patch.object(Notion, "add_item", side_effect=["p1", down]), \
+                    self.assertRaises(SystemExit):
+                self.run_cli("run", "--from-file", SAMPLE)
+            with open(os.path.join(fixture, "state.json")) as f:
+                self.assertEqual(list(json.load(f)), ["demo-note-1"])
+            with open(os.path.join(fixture, "pending.json")) as f:
+                self.assertEqual(sorted(json.load(f)), ["demo-note-2", "demo-note-3"])
+            with mock.patch.object(Notion, "add_item", side_effect=["p2", "p3"]) as add:
+                out = self.run_cli("run", "--from-file", SAMPLE)
+        self.assertEqual([c.args[1]["name"] for c in add.call_args_list],
+                         ["Item from demo-note-2", "Item from demo-note-3"])
+        self.assertFalse(os.path.exists(os.path.join(fixture, "pending.json")))
+        self.assertIn("Added 2 items", out)
 
     def test_fixture_run_needs_no_config_file(self):
         missing = os.path.join(self.tmp, "nope.toml")

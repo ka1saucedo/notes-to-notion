@@ -200,13 +200,18 @@ class State:
             self._save(self.pending_path, pending)
         return changed
 
-    def commit(self) -> int:
+    def commit(self, note_ids: Iterable[str] | None = None) -> int:
+        """Move pending notes into the seen state: all of them, or only `note_ids`."""
         state, pending = self._load(self.state_path), self._load(self.pending_path)
-        state.update(pending)
+        wanted = set(pending) if note_ids is None else set(note_ids)
+        done = {i: pending.pop(i) for i in list(pending) if i in wanted}
+        state.update(done)
         self._save(self.state_path, state)
-        if os.path.exists(self.pending_path):
+        if pending:
+            self._save(self.pending_path, pending)
+        elif os.path.exists(self.pending_path):
             os.remove(self.pending_path)
-        return len(pending)
+        return len(done)
 
     def has_pending(self) -> bool:
         return os.path.exists(self.pending_path) and os.path.getsize(self.pending_path) > 2
