@@ -10,7 +10,8 @@ from . import __version__
 from . import config as C
 from . import notes as N
 from . import translator as T
-from .notion import Notion, plan_for
+from .http import HTTPError
+from .notion import Notion, NotionError, plan_for
 from .template import TEMPLATE
 
 
@@ -25,6 +26,13 @@ def _state(cfg, from_file=None):
     # Fixture runs keep their own state so demos never disturb the real one.
     d = C.state_dir(cfg)
     return N.State(os.path.join(d, "fixture") if from_file else d)
+
+
+def _inbound(cfg) -> str:
+    ds = cfg["notion"]["inbound_data_source_id"]
+    if not ds:
+        raise C.ConfigError("Set notion.inbound_data_source_id (run `n2n setup-notion`).")
+    return ds
 
 
 def cmd_init(a):
@@ -67,21 +75,17 @@ def cmd_run(a):
     if a.dry_run:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
-    ds = cfg["notion"]["inbound_data_source_id"]
-    if not ds:
-        sys.exit("Set notion.inbound_data_source_id (run `n2n setup-notion`).")
+    ds = _inbound(cfg)
     notion = Notion.from_config(cfg)
     for it in items:
         notion.add_item(ds, it)
     state.commit()  # only after every item was filed
     if not items:
         print("Nothing worth filing in the new notes.")
-    elif len(items) == 1:
-        print(f"Added **{items[0]['name']}** from your notes to Notion. Please review.")
-    else:
-        print(f"Added {len(items)} items from your notes to Notion. Please review:")
-        for it in items:
-            print(f" • {it['name']}")
+        return
+    print(f"Added {len(items)} item{'s' if len(items) > 1 else ''} from your notes to Notion. Please review:")
+    for it in items:
+        print(f" • {it['name']}")
 
 
 def cmd_dump(a):
@@ -98,14 +102,12 @@ def cmd_add(a):
     cfg = C.load(a.config)
     raw = json.load(open(a.file)) if a.file else json.load(sys.stdin)
     raw = raw.get("items", raw) if isinstance(raw, dict) else raw
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    batch = datetime.now(ZoneInfo(cfg["taxonomy"]["timezone"])).strftime("%Y-%m-%dT%H:%M")
     ids = {str(i.get("source_note_id")) for i in raw if isinstance(i, dict)}
-    items = T.clean_items(raw, cfg, batch, ids)
+    items = T.clean_items(raw, cfg, T.batch_id(cfg), ids)
+    ds = _inbound(cfg)
     notion = Notion.from_config(cfg)
     for it in items:
-        print(f'{notion.add_item(cfg["notion"]["inbound_data_source_id"], it)} | {it["name"]}')
+        print(f'{notion.add_item(ds, it)} | {it["name"]}')
 
 
 def cmd_commit(a):
@@ -118,8 +120,9 @@ def cmd_promote(a):
     notion = Notion.from_config(cfg)
     has_tracker = bool(cfg["notion"]["tracker_data_source_id"])
     has_cal = cfg["calendar"]["provider"] == "google"
-    rows = notion.approved_rows(cfg["notion"]["inbound_data_source_id"])
+    rows = notion.approved_rows(_inbound(cfg))
     if not rows:
+        print("Nothing approved.")
         return
     svc, filed, errors = None, [], []
     for row in rows:
@@ -193,7 +196,7 @@ def main(argv=None):
 
     def add(name, fn, help_, fixture=False):
         p = sub.add_parser(name, help=help_)
-        p.set_defaults(fn=fn)
+        p.set_defaults(fn=fn, from_file=None)
         if fixture:
             p.add_argument("--from-file", help="read notes from a JSON file instead of Apple Notes")
         return p
@@ -216,11 +219,9 @@ def main(argv=None):
     add("doctor", cmd_doctor, "check your setup")
 
     a = ap.parse_args(argv)
-    if not hasattr(a, "from_file"):
-        a.from_file = None
     try:
         a.fn(a)
-    except (C.ConfigError, N.NotesError) as e:
+    except (C.ConfigError, N.NotesError, HTTPError, NotionError) as e:
         sys.exit(f"error: {e}")
 
 

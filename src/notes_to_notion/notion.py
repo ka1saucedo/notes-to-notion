@@ -16,6 +16,10 @@ P_BATCH, P_CAL_ID = "Batch ID", "Calendar Event ID"
 STATUS_COLORS = {"Proposed": "yellow", "Approved": "green", "Filed": "gray", "Rejected": "red"}
 
 
+class NotionError(RuntimeError):
+    """Notion answered, but not with what we asked for."""
+
+
 def _sel(names):
     return {"select": {"options": [{"name": n} for n in names]}}
 
@@ -63,7 +67,7 @@ class Notion:
         })
         sources = r.get("data_sources") or []
         if not sources:
-            raise RuntimeError(f"Database created but no data source returned: {r}")
+            raise NotionError(f"Database created but no data source returned: {r}")
         return r["id"], sources[0]["id"]
 
     # ---- ingest ----
@@ -90,7 +94,7 @@ class Notion:
         r = self.req("POST", "pages", {"parent": {"type": "data_source_id", "data_source_id": data_source_id},
                                        "properties": P})
         if r.get("object") != "page":
-            raise RuntimeError(f"Notion create failed for {it['name']!r}: {r.get('message', r)}")
+            raise NotionError(f"Notion create failed for {it['name']!r}: {r.get('message', r)}")
         return r["id"]
 
     # ---- promote ----
@@ -135,7 +139,7 @@ class Notion:
                                                   "data_source_id": n["tracker_data_source_id"]},
                                        "properties": props})
         if r.get("object") != "page":
-            raise RuntimeError(f"Tracker create failed: {r.get('message', r)}")
+            raise NotionError(f"Tracker create failed: {r.get('message', r)}")
         return r.get("url", "")
 
     def mark_filed(self, row: dict, task_url: str = "", event_id: str = "") -> None:
@@ -145,7 +149,7 @@ class Notion:
             props[P_CAL_ID] = _rt(event_id)
         r = self.req("PATCH", f"pages/{row['id']}", {"properties": props})
         if r.get("object") != "page":
-            raise RuntimeError(f"Status update failed: {r.get('message', r)}")
+            raise NotionError(f"Status update failed: {r.get('message', r)}")
 
 
 def _pv(p):
@@ -167,8 +171,11 @@ def _pv(p):
 
 
 def row_from_page(pg: dict) -> dict:
-    P = pg["properties"]
-    g = lambda k: _pv(P.get(k))  # noqa: E731
+    props = pg["properties"]
+
+    def g(key):
+        return _pv(props.get(key))
+
     return {
         "id": pg["id"], "url": pg.get("url", ""), "name": g(P_TITLE),
         "item_type": g(P_ITEM_TYPE) or "Task", "category": g(P_CATEGORY), "priority": g(P_PRIORITY) or "Medium",
