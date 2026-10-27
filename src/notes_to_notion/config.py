@@ -109,7 +109,8 @@ def validate(cfg: dict) -> None:
     try:
         ZoneInfo(tax["timezone"])
     except Exception:
-        raise ConfigError(f"Unknown timezone {tax['timezone']!r} (use an IANA name like 'Pacific/Honolulu')")
+        raise ConfigError(f"Unknown timezone {tax['timezone']!r} "
+                          "(use an IANA name like 'Pacific/Honolulu')") from None
     if cfg["ai"]["provider"] not in ("anthropic", "openai", "ollama"):
         raise ConfigError("ai.provider must be anthropic, openai, or ollama")
     if int(cfg["notes"]["days"]) > 30:

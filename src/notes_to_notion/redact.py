@@ -26,9 +26,10 @@ REDACTED = "[REDACTED]"
 
 
 def looks_like_password(line: str) -> bool:
-    """A bare 8-40 char token with letters + digits and (mixed case or symbols), not an email/URL/path.
+    """A bare 8-40 char token with letters and digits plus mixed case or symbols.
 
-    Mixed case needs >= 2 digits so product names like "W3Schools" survive; a symbol plus one digit is enough.
+    Emails, URLs and paths are not passwords. Mixed case needs >= 2 digits so product names like
+    "W3Schools" survive; a symbol plus one digit is enough.
     """
     s = line.strip()
     if not PASSWORD_LIKE_RE.match(s) or "@" in s or "://" in s or s.startswith(("/", "#", "$")):

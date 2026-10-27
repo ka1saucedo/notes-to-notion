@@ -1,7 +1,7 @@
 """Optional Google Calendar output for approved events.
 
-Install the extra (`pip install "notes-to-notion[calendar]"`) and point `calendar.google_token_file` at an
-authorized-user OAuth token JSON with the calendar.events scope.
+Install the extra (`pip install "notes-to-notion[calendar]"`) and point
+`calendar.google_token_file` at an authorized-user OAuth token JSON with the calendar.events scope.
 """
 import os
 from datetime import datetime, timedelta
@@ -14,7 +14,8 @@ def service(cfg: dict):
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
     except ImportError:
-        raise RuntimeError('Calendar output needs: pip install "notes-to-notion[calendar]"') from None
+        msg = 'Calendar output needs: pip install "notes-to-notion[calendar]"'
+        raise RuntimeError(msg) from None
     path = os.path.expanduser(cfg["calendar"]["google_token_file"])
     creds = Credentials.from_authorized_user_file(path)
     if not creds.valid and creds.refresh_token:

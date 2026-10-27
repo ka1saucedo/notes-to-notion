@@ -12,7 +12,7 @@ state_dir = "~/.local/state/notes-to-notion"
 [ai]
 provider = "anthropic"             # anthropic | openai | ollama
 model = ""                         # REQUIRED: a current model id for your provider
-# base_url = ""                    # OpenAI-compatible server (LM Studio, vLLM, OpenRouter) or Ollama host
+# base_url = ""                    # OpenAI-compatible server (LM Studio, vLLM) or Ollama host
 # api_key_env = ""                 # override the env var name for the key
 temperature = 0.2
 
@@ -61,7 +61,7 @@ status_value = "Not started"
 assignee = "Assignee"
 
 [calendar]
-provider = "none"                  # none | google  (google needs: pip install "notes-to-notion[calendar]")
+provider = "none"                  # none | google (needs: pip install "notes-to-notion[calendar]")
 google_token_file = ""
 calendar_id = "primary"
 event_minutes = 60
