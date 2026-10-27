@@ -24,6 +24,10 @@ calendar = ["google-api-python-client>=2.0", "google-auth>=2.0"]
 certifi = ["certifi"]
 dev = ["ruff==0.17.3", "mypy==2.4.0", "pytest==9.1.1"]
 
+[project.urls]
+Homepage = "https://github.com/ka1saucedo/notes-to-notion"
+Issues = "https://github.com/ka1saucedo/notes-to-notion/issues"
+
 [project.scripts]
 n2n = "notes_to_notion.cli:main"
 
