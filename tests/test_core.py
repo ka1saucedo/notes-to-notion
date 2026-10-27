@@ -1,13 +1,20 @@
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from notes_to_notion import calendar_google as G
+from notes_to_notion import cli
 from notes_to_notion import config as C
 from notes_to_notion import notes as N
 from notes_to_notion import translator as T
+from notes_to_notion.http import HTTPError, request_json
 from notes_to_notion.notion import Notion, inbound_schema, plan_for, row_from_page
 from notes_to_notion.redact import redact
 
@@ -23,6 +30,16 @@ def cfg(**over):
     c = C._merge(C.DEFAULTS, base)
     C.validate(c)
     return c
+
+
+def row(**over):
+    """An approved Inbound row as row_from_page would return it."""
+    base = {"id": "p", "url": "https://notion.example/p", "name": "Dentist", "item_type": "Event",
+            "category": "Personal", "priority": "Medium", "effort": "", "task_type": [],
+            "due_date": "", "target_finish": "", "event_time": "", "needs_calendar": True,
+            "description": "Cleaning."}
+    base.update(over)
+    return base
 
 
 class TestRedact(unittest.TestCase):
@@ -216,6 +233,176 @@ class TestNotion(unittest.TestCase):
         self.assertEqual(plan_for(row, True, False), (False, False))
         row["item_type"] = "Task"
         self.assertEqual(plan_for(row, True, True), (True, True))
+
+    def test_approved_rows_follows_pagination(self):
+        def page(name):
+            title = {"type": "title", "title": [{"plain_text": name}]}
+            return {"id": name, "properties": {"Task name": title}}
+
+        replies = [{"results": [page("b")], "has_more": True, "next_cursor": "c2"},
+                   {"results": [page("a")], "has_more": False}]
+        n = Notion("t")
+        with mock.patch.object(n, "req", side_effect=replies) as req:
+            rows = n.approved_rows("ds")
+        self.assertEqual([r["name"] for r in rows], ["a", "b"])  # sorted by id
+        first, second = (call.args[2] for call in req.call_args_list)
+        self.assertEqual(first["filter"], {"property": "Status", "select": {"equals": "Approved"}})
+        self.assertNotIn("start_cursor", first)
+        self.assertEqual(second["start_cursor"], "c2")
+
+    def test_create_tracker_task_maps_columns(self):
+        c = cfg(notion={"tracker_data_source_id": "trk", "assignee_user_id": "u1"},
+                tracker={"effort": "", "status_type": "select"})
+        r = row(name="Email Maya", item_type="Task", category="Work", priority="High",
+                effort="Small", due_date="2026-10-10", description="Lease.")
+        n = Notion("t")
+        reply = {"object": "page", "url": "https://notion.example/t"}
+        with mock.patch.object(n, "req", return_value=reply) as req:
+            self.assertEqual(n.create_tracker_task(c, r), "https://notion.example/t")
+        body = req.call_args[0][2]
+        props = body["properties"]
+        self.assertEqual(body["parent"]["data_source_id"], "trk")
+        self.assertEqual(props["Task name"]["title"][0]["text"]["content"], "Email Maya")
+        self.assertEqual(props["Status"], {"select": {"name": "Not started"}})
+        self.assertEqual(props["Category"], {"select": {"name": "Work"}})
+        self.assertEqual(props["Priority"], {"select": {"name": "High"}})
+        self.assertNotIn("Effort level", props)  # column switched off in config
+        self.assertEqual(props["Task type"], {"multi_select": [{"name": "Other"}]})  # fallback
+        self.assertEqual(props["Due date"], {"date": {"start": "2026-10-10"}})
+        self.assertNotIn("Target finish", props)
+        self.assertEqual(props["Description"]["rich_text"][0]["text"]["content"],
+                         "Lease.\n\nFrom Inbound: https://notion.example/p")
+        self.assertEqual(props["Assignee"], {"people": [{"id": "u1"}]})
+
+    def test_mark_filed_sets_status_and_links(self):
+        n = Notion("t")
+        with mock.patch.object(n, "req", return_value={"object": "page"}) as req:
+            n.mark_filed(row(), "https://notion.example/t", "ev1")
+        method, path, body = req.call_args[0]
+        self.assertEqual((method, path), ("PATCH", "pages/p"))
+        props = body["properties"]
+        self.assertEqual(props["Status"], {"select": {"name": "Filed"}})
+        desc = props["Description"]["rich_text"][0]["text"]["content"]
+        self.assertIn("https://notion.example/t", desc)
+        self.assertEqual(props["Calendar Event ID"]["rich_text"][0]["text"]["content"], "ev1")
+
+
+class TestCalendar(unittest.TestCase):
+    def test_timed_event_becomes_a_block(self):
+        c = cfg(calendar={"event_minutes": 45})
+        body = G.event_body(c, row(event_time="2026-10-14T09:30:00-10:00"))
+        self.assertEqual(body["summary"], "Dentist")
+        self.assertEqual(body["start"], {"dateTime": "2026-10-14T09:30:00-10:00"})
+        self.assertEqual(body["end"], {"dateTime": "2026-10-14T10:15:00-10:00"})
+        self.assertEqual(body["description"], "Cleaning.\n\nFrom Inbound: https://notion.example/p")
+
+    def test_naive_time_gets_the_config_timezone(self):
+        body = G.event_body(cfg(), row(event_time="2026-10-14T09:30"))
+        self.assertEqual(body["start"], {"dateTime": "2026-10-14T09:30:00-10:00"})
+
+    def test_date_only_becomes_all_day(self):
+        body = G.event_body(cfg(), row(due_date="2026-10-14"))
+        self.assertEqual(body["start"], {"date": "2026-10-14"})
+        self.assertEqual(body["end"], {"date": "2026-10-15"})
+
+    def test_nothing_to_schedule(self):
+        self.assertIsNone(G.event_body(cfg(), row()))
+
+    def test_create_event_uses_the_configured_calendar(self):
+        svc = mock.Mock()
+        svc.events.return_value.insert.return_value.execute.return_value = {"id": "ev1"}
+        c = cfg(calendar={"calendar_id": "work"})
+        self.assertEqual(G.create_event(svc, c, row(due_date="2026-10-14")), "ev1")
+        insert = svc.events.return_value.insert
+        self.assertEqual(insert.call_args.kwargs["calendarId"], "work")
+        self.assertEqual(insert.call_args.kwargs["body"]["start"], {"date": "2026-10-14"})
+        self.assertEqual(G.create_event(svc, c, row()), "")
+
+
+class TestHTTP(unittest.TestCase):
+    """request_json with urlopen mocked out."""
+
+    def reply(self, raw):
+        resp = mock.MagicMock()
+        resp.__enter__.return_value.read.return_value = raw
+        return resp
+
+    def test_sends_json_with_headers(self):
+        with mock.patch("urllib.request.urlopen", return_value=self.reply(b'{"ok": true}')) as uo:
+            out = request_json("POST", "http://localhost:1/x", headers={"X-A": "1"}, body={"a": 1})
+        self.assertEqual(out, {"ok": True})
+        req = uo.call_args.args[0]
+        self.assertEqual(req.data, b'{"a": 1}')
+        self.assertEqual(req.get_header("X-a"), "1")
+        self.assertEqual(req.get_header("Content-type"), "application/json")
+
+    def test_http_error_becomes_one_line(self):
+        err = urllib.error.HTTPError("https://api.example/x", 401, "Unauthorized", {},
+                                     io.BytesIO(b'{"message": "bad token"}'))
+        with mock.patch("urllib.request.urlopen", side_effect=err), \
+                self.assertRaises(HTTPError) as ctx:
+            request_json("POST", "https://api.example/x", body={})
+        self.assertEqual(str(ctx.exception),
+                         'POST https://api.example/x -> HTTP 401: {"message": "bad token"}')
+
+    def test_network_error_becomes_one_line(self):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no route")), \
+                self.assertRaises(HTTPError) as ctx:
+            request_json("GET", "http://localhost:1/x")
+        self.assertEqual(str(ctx.exception), "GET http://localhost:1/x -> no route")
+
+    def test_non_object_reply_is_an_error(self):
+        with mock.patch("urllib.request.urlopen", return_value=self.reply(b"[1, 2]")), \
+                self.assertRaises(HTTPError):
+            request_json("GET", "http://localhost:1/x")
+
+
+class TestCLI(unittest.TestCase):
+    """main() end to end on the sample notes, with no network and a throwaway state dir."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config = os.path.join(self.tmp, "config.toml")
+        with open(self.config, "w") as f:
+            f.write(f"[notes]\nstate_dir = '{self.tmp}'\n[notion]\ninbound_data_source_id = 'ds'\n")
+
+    def run_cli(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["--config", self.config, *args])
+        return out.getvalue()
+
+    def test_dump_from_file_prints_redacted_notes(self):
+        data = json.loads(self.run_cli("dump", "--from-file", SAMPLE))
+        self.assertEqual([n["id"] for n in data["notes"]],
+                         ["demo-note-1", "demo-note-2", "demo-note-3"])
+        self.assertEqual(data["skipped_lines"], 0)
+        lines = [line for n in data["notes"] for line in n["lines"]]
+        self.assertIn("wifi password: [REDACTED]", lines)
+        self.assertNotIn("correct-horse", "\n".join(lines))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "fixture", "pending.json")))
+
+    def test_dump_then_commit_then_nothing_new(self):
+        self.run_cli("dump", "--from-file", SAMPLE)
+        committed = self.run_cli("commit", "--from-file", SAMPLE).strip()
+        self.assertEqual(committed, "Committed 3 notes.")
+        self.assertEqual(json.loads(self.run_cli("dump", "--from-file", SAMPLE))["notes"], [])
+
+    def test_notion_failure_is_one_error_line(self):
+        items = os.path.join(self.tmp, "items.json")
+        with open(items, "w") as f:
+            json.dump({"items": [{"name": "Email Maya"}]}, f)
+        err = HTTPError("POST https://api.notion.com/v1/pages -> HTTP 401: unauthorized")
+        with mock.patch.dict(os.environ, {"NOTION_API_KEY": "k"}), \
+                mock.patch("notes_to_notion.notion.request_json", side_effect=err), \
+                self.assertRaises(SystemExit) as ctx:
+            self.run_cli("add", "--file", items)
+        self.assertEqual(ctx.exception.code, f"error: {err}")
+
+    def test_missing_config_is_one_error_line(self):
+        with self.assertRaises(SystemExit) as ctx:
+            cli.main(["--config", os.path.join(self.tmp, "nope.toml"), "dump"])
+        self.assertTrue(str(ctx.exception.code).startswith("error: No config at "))
 
 
 class TestProviders(unittest.TestCase):
