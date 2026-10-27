@@ -404,6 +404,15 @@ class TestCLI(unittest.TestCase):
             cli.main(["--config", os.path.join(self.tmp, "nope.toml"), "dump"])
         self.assertTrue(str(ctx.exception.code).startswith("error: No config at "))
 
+    def test_fixture_run_needs_no_config_file(self):
+        missing = os.path.join(self.tmp, "nope.toml")
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.tmp}), contextlib.redirect_stdout(out):
+            cli.main(["--config", missing, "dump", "--from-file", SAMPLE])
+        self.assertEqual(len(json.loads(out.getvalue())["notes"]), 3)
+        state = os.path.join(self.tmp, ".local", "state", "notes-to-notion", "fixture")
+        self.assertTrue(os.path.isdir(state))  # default state dir, under the patched HOME
+
 
 class TestProviders(unittest.TestCase):
     """Request shapes for each provider, with the network mocked out."""

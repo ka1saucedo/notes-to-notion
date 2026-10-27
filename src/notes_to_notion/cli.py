@@ -34,6 +34,11 @@ def _state(cfg: C.Config, from_file: str | None = None) -> N.State:
     return N.State(os.path.join(d, "fixture") if from_file else d)
 
 
+def _load(a: argparse.Namespace) -> C.Config:
+    # A fixture run needs no config file: the defaults are enough to demo on sample notes.
+    return C.load(a.config, require_file=not a.from_file)
+
+
 def _inbound(cfg: C.Config) -> str:
     ds: str = cfg["notion"]["inbound_data_source_id"]
     if not ds:
@@ -53,7 +58,7 @@ def cmd_init(a: argparse.Namespace) -> None:
 
 
 def cmd_setup_notion(a: argparse.Namespace) -> None:
-    cfg = C.load(a.config)
+    cfg = _load(a)
     db_id, ds_id = Notion.from_config(cfg).create_inbound(a.parent_page, cfg, title=a.title)
     path = cfg["_path"]
     with open(path) as f:
@@ -71,13 +76,13 @@ def cmd_setup_notion(a: argparse.Namespace) -> None:
 
 
 def cmd_baseline(a: argparse.Namespace) -> None:
-    cfg = C.load(a.config)
+    cfg = _load(a)
     n = _state(cfg, a.from_file).baseline(_read(cfg, a.from_file))
     print(f"Baseline: {n} notes marked as seen. Only what you write from now on gets captured.")
 
 
 def cmd_run(a: argparse.Namespace) -> None:
-    cfg = C.load(a.config)
+    cfg = _load(a)
     state = _state(cfg, a.from_file)
     changed = state.changes(_read(cfg, a.from_file), record=not a.dry_run)
     if not changed:
@@ -104,7 +109,7 @@ def cmd_run(a: argparse.Namespace) -> None:
 
 def cmd_dump(a: argparse.Namespace) -> None:
     """Agent mode: print new notes (redacted, skip-filtered) for an external agent to translate."""
-    cfg = C.load(a.config)
+    cfg = _load(a)
     changed = _state(cfg, a.from_file).changes(_read(cfg, a.from_file))
     notes, skipped = T.prefilter(changed, cfg)
     json.dump({"notes": notes, "skipped_lines": skipped}, sys.stdout, indent=1, ensure_ascii=False)
@@ -113,7 +118,7 @@ def cmd_dump(a: argparse.Namespace) -> None:
 
 def cmd_add(a: argparse.Namespace) -> None:
     """Agent mode: validate items JSON from an agent and file them to Inbound as Proposed."""
-    cfg = C.load(a.config)
+    cfg = _load(a)
     if a.file:
         with open(a.file) as f:
             raw = json.load(f)
@@ -129,12 +134,12 @@ def cmd_add(a: argparse.Namespace) -> None:
 
 
 def cmd_commit(a: argparse.Namespace) -> None:
-    cfg = C.load(a.config)
+    cfg = _load(a)
     print(f"Committed {_state(cfg, a.from_file).commit()} notes.")
 
 
 def cmd_promote(a: argparse.Namespace) -> None:
-    cfg = C.load(a.config)
+    cfg = _load(a)
     notion = Notion.from_config(cfg)
     has_tracker = bool(cfg["notion"]["tracker_data_source_id"])
     has_cal = cfg["calendar"]["provider"] == "google"
@@ -176,7 +181,7 @@ def cmd_promote(a: argparse.Namespace) -> None:
 
 def cmd_monitor(a: argparse.Namespace) -> None:
     """Cheap change detector for schedulers: output changes only when there's something to do."""
-    cfg = C.load(a.config)
+    cfg = _load(a)
     for r in sorted(_read(cfg, with_body=False), key=lambda r: r["id"]):
         print(f'{r["id"]}|{r["modified"]}')
     st = _state(cfg)
@@ -195,7 +200,7 @@ def cmd_doctor(a: argparse.Namespace) -> None:
     check("macOS (Apple Notes access)", platform.system() == "Darwin",
           "use --from-file on other platforms")
     try:
-        cfg = C.load(a.config)
+        cfg = _load(a)
         check(f"config {cfg['_path']}", True)
     except C.ConfigError as e:
         check("config", False, str(e))
