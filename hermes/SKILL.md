@@ -23,7 +23,8 @@ Inbound [Approved] ──n2n promote (script, no agent)──► task tracker + 
 
 ## Setup (once)
 
-1. `pip install notes-to-notion` (or `pip install -e .` from the repo). Run `n2n init`, edit the config.
+1. `pip install git+https://github.com/ka1saucedo/notes-to-notion` (or `pip install -e .` from a clone).
+   Run `n2n init`, edit the config.
 2. Put `NOTION_API_KEY` in the environment Hermes runs with (e.g. `~/.hermes/.env`).
 3. `n2n setup-notion --parent-page <page id shared with your integration>`
 4. `n2n baseline` so only notes written from now on are captured. Never backfill unless the user asks.
