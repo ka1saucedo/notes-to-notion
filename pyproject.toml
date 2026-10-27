@@ -35,3 +35,16 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "B", "SIM", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+# Optional imports: certifi and the Google Calendar client, which is only partly typed.
+module = ["certifi", "google.*", "googleapiclient.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "notes_to_notion.calendar_google"
+disallow_untyped_calls = false

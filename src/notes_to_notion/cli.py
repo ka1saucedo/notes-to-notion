@@ -5,17 +5,22 @@ import os
 import platform
 import re
 import sys
+from collections.abc import Callable
+from typing import Any
 
 from . import __version__
 from . import config as C
 from . import notes as N
 from . import translator as T
 from .http import HTTPError
+from .models import Note
 from .notion import Notion, NotionError, plan_for
 from .template import TEMPLATE
 
+Command = Callable[[argparse.Namespace], None]
 
-def _read(cfg, from_file=None, with_body=True):
+
+def _read(cfg: C.Config, from_file: str | None = None, with_body: bool = True) -> list[Note]:
     if from_file:
         return N.read_fixture(from_file)
     notes = cfg["notes"]
@@ -23,20 +28,20 @@ def _read(cfg, from_file=None, with_body=True):
                               with_body=with_body, skip_folders=notes["skip_folders"])
 
 
-def _state(cfg, from_file=None):
+def _state(cfg: C.Config, from_file: str | None = None) -> N.State:
     # Fixture runs keep their own state so demos never disturb the real one.
     d = C.state_dir(cfg)
     return N.State(os.path.join(d, "fixture") if from_file else d)
 
 
-def _inbound(cfg) -> str:
-    ds = cfg["notion"]["inbound_data_source_id"]
+def _inbound(cfg: C.Config) -> str:
+    ds: str = cfg["notion"]["inbound_data_source_id"]
     if not ds:
         raise C.ConfigError("Set notion.inbound_data_source_id (run `n2n setup-notion`).")
     return ds
 
 
-def cmd_init(a):
+def cmd_init(a: argparse.Namespace) -> None:
     path = os.path.expanduser(a.config or os.environ.get("N2N_CONFIG") or C.DEFAULT_CONFIG_PATH)
     if os.path.exists(path) and not a.force:
         sys.exit(f"{path} already exists (use --force to overwrite).")
@@ -47,7 +52,7 @@ def cmd_init(a):
           "`n2n setup-notion --parent-page <page id>`.")
 
 
-def cmd_setup_notion(a):
+def cmd_setup_notion(a: argparse.Namespace) -> None:
     cfg = C.load(a.config)
     db_id, ds_id = Notion.from_config(cfg).create_inbound(a.parent_page, cfg, title=a.title)
     path = cfg["_path"]
@@ -65,13 +70,13 @@ def cmd_setup_notion(a):
         print(f'Add this to [notion] in your config: inbound_data_source_id = "{ds_id}"')
 
 
-def cmd_baseline(a):
+def cmd_baseline(a: argparse.Namespace) -> None:
     cfg = C.load(a.config)
     n = _state(cfg, a.from_file).baseline(_read(cfg, a.from_file))
     print(f"Baseline: {n} notes marked as seen. Only what you write from now on gets captured.")
 
 
-def cmd_run(a):
+def cmd_run(a: argparse.Namespace) -> None:
     cfg = C.load(a.config)
     state = _state(cfg, a.from_file)
     changed = state.changes(_read(cfg, a.from_file), record=not a.dry_run)
@@ -97,7 +102,7 @@ def cmd_run(a):
         print(f" • {it['name']}")
 
 
-def cmd_dump(a):
+def cmd_dump(a: argparse.Namespace) -> None:
     """Agent mode: print new notes (redacted, skip-filtered) for an external agent to translate."""
     cfg = C.load(a.config)
     changed = _state(cfg, a.from_file).changes(_read(cfg, a.from_file))
@@ -106,7 +111,7 @@ def cmd_dump(a):
     print()
 
 
-def cmd_add(a):
+def cmd_add(a: argparse.Namespace) -> None:
     """Agent mode: validate items JSON from an agent and file them to Inbound as Proposed."""
     cfg = C.load(a.config)
     if a.file:
@@ -123,12 +128,12 @@ def cmd_add(a):
         print(f'{notion.add_item(ds, it)} | {it["name"]}')
 
 
-def cmd_commit(a):
+def cmd_commit(a: argparse.Namespace) -> None:
     cfg = C.load(a.config)
     print(f"Committed {_state(cfg, a.from_file).commit()} notes.")
 
 
-def cmd_promote(a):
+def cmd_promote(a: argparse.Namespace) -> None:
     cfg = C.load(a.config)
     notion = Notion.from_config(cfg)
     has_tracker = bool(cfg["notion"]["tracker_data_source_id"])
@@ -137,7 +142,9 @@ def cmd_promote(a):
     if not rows:
         print("Nothing approved.")
         return
-    svc, filed, errors = None, [], []
+    svc: Any = None
+    filed: list[str] = []
+    errors: list[str] = []
     for row in rows:
         make_task, make_event = plan_for(row, has_tracker, has_cal)
         if a.dry_run:
@@ -167,7 +174,7 @@ def cmd_promote(a):
         sys.exit(1)
 
 
-def cmd_monitor(a):
+def cmd_monitor(a: argparse.Namespace) -> None:
     """Cheap change detector for schedulers: output changes only when there's something to do."""
     cfg = C.load(a.config)
     for r in sorted(_read(cfg, with_body=False), key=lambda r: r["id"]):
@@ -177,10 +184,10 @@ def cmd_monitor(a):
         print(f"PENDING|{st.pending_mtime()}")
 
 
-def cmd_doctor(a):
+def cmd_doctor(a: argparse.Namespace) -> None:
     ok = True
 
-    def check(label, cond, hint=""):
+    def check(label: str, cond: object, hint: str = "") -> None:
         nonlocal ok
         ok &= bool(cond)
         print(("✓ " if cond else "✗ ") + label + ("" if cond or not hint else f"  ({hint})"))
@@ -206,14 +213,14 @@ def cmd_doctor(a):
     sys.exit(0 if ok else 1)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="n2n", description=__doc__)
     ap.add_argument("--version", action="version", version=f"notes-to-notion {__version__}")
     ap.add_argument("--config",
                     help=f"config path (default {C.DEFAULT_CONFIG_PATH} or $N2N_CONFIG)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    def add(name, fn, help_, fixture=False):
+    def add(name: str, fn: Command, help_: str, fixture: bool = False) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_)
         p.set_defaults(fn=fn, from_file=None)
         if fixture:

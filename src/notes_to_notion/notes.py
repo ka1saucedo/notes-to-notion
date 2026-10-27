@@ -11,8 +11,11 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Iterable
 from datetime import datetime
+from typing import Any, TypedDict
 
+from .models import Change, Note
 from .redact import redact
 
 MAX_DAYS = 30
@@ -20,6 +23,15 @@ MAX_DAYS = 30
 
 class NotesError(RuntimeError):
     pass
+
+
+class Entry(TypedDict):
+    """What the state file keeps per note: fingerprints and a redacted title, never the text."""
+
+    hash: str
+    lines: list[str]
+    title: str
+    seen: str
 
 
 def _applescript_str(s: str) -> str:
@@ -75,7 +87,7 @@ end iso
 
 
 def read_apple_notes(days: int = MAX_DAYS, account: str = "iCloud", with_body: bool = True,
-                     skip_folders=("Recently Deleted",)) -> list[dict]:
+                     skip_folders: Iterable[str] = ("Recently Deleted",)) -> list[Note]:
     if days > MAX_DAYS:
         raise NotesError(f"Refused: {days} days exceeds the {MAX_DAYS}-day hard limit.")
     p = subprocess.run(["osascript", "-e", _script(days, account, with_body)],
@@ -85,8 +97,8 @@ def read_apple_notes(days: int = MAX_DAYS, account: str = "iCloud", with_body: b
     return _parse(p.stdout, with_body, set(skip_folders))
 
 
-def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
-    recs = []
+def _parse(raw: str, with_body: bool, skip_folders: set[str]) -> list[Note]:
+    recs: list[Note] = []
     for chunk in raw.split("<<<FOLDER>>>")[1:]:
         folder, ids, names, mods, creates, texts = chunk.split("<<<S>>>", 5)
         folder = folder.strip()
@@ -104,11 +116,11 @@ def _parse(raw: str, with_body: bool, skip_folders: set) -> list[dict]:
     return recs
 
 
-def read_fixture(path: str) -> list[dict]:
+def read_fixture(path: str) -> list[Note]:
     """Load notes from a JSON file instead of Apple Notes (demo, tests, other platforms)."""
     with open(os.path.expanduser(path)) as f:
         recs = json.load(f)
-    out = []
+    out: list[Note] = []
     for i, r in enumerate(recs):
         out.append({
             "id": r.get("id") or f"fixture-{i}", "folder": r.get("folder", "Notes"),
@@ -126,47 +138,50 @@ def fingerprint(text: str) -> str:
 class State:
     """Remembers which notes and lines have already been captured (fingerprints only)."""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: str) -> None:
         self.dir = os.path.expanduser(directory)
         os.makedirs(self.dir, exist_ok=True)
         self.state_path = os.path.join(self.dir, "state.json")
         self.pending_path = os.path.join(self.dir, "pending.json")
 
     @staticmethod
-    def _load(path):
+    def _load(path: str) -> dict[str, Any]:
         try:
             with open(path) as f:
-                return json.load(f)
+                data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
+        return data if isinstance(data, dict) else {}
 
-    def _save(self, path, data):
+    @staticmethod
+    def _save(path: str, data: dict[str, Any]) -> None:
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f, indent=0)
         os.replace(tmp, path)
 
     @staticmethod
-    def _entry(rec):
+    def _entry(rec: Note) -> Entry:
         return {"hash": fingerprint(rec["body"]),
                 "lines": sorted({fingerprint(line) for line in rec["body"].splitlines()}),
                 "title": redact(rec["title"]),
                 "seen": datetime.now().isoformat(timespec="minutes")}
 
-    def baseline(self, recs) -> int:
+    def baseline(self, recs: list[Note]) -> int:
         state = self._load(self.state_path)
         for r in recs:
             state[r["id"]] = self._entry(r)
         self._save(self.state_path, state)
         return len(recs)
 
-    def changes(self, recs, record: bool = True) -> list[dict]:
+    def changes(self, recs: list[Note], record: bool = True) -> list[Change]:
         """New or edited notes. For edited notes, only the lines added since last capture.
 
         Writes pending.json (unless record=False); call commit() once the items were filed.
         """
         state = self._load(self.state_path)
-        changed, pending = [], {}
+        changed: list[Change] = []
+        pending: dict[str, Entry] = {}
         for r in recs:
             prev = state.get(r["id"])
             if prev and prev["hash"] == fingerprint(r["body"]):

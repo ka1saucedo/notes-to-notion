@@ -8,11 +8,14 @@ Pipeline per run:
 """
 import json
 import re
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 from . import config as C
 from .http import request_json
+from .models import Change, Item, NoteLines
 from .redact import REDACTED, redact
 
 SYSTEM_TEMPLATE = """\
@@ -60,22 +63,33 @@ If nothing is worth filing, return {{"items": []}}."""
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Anything that turns (system prompt, user prompt) into the model's reply text.
+Provider = Callable[[str, str], str]
 
-def _tz(cfg):
+
+class Translation(TypedDict):
+    """What one run produced: validated items plus the batch id stamped on each of them."""
+
+    items: list[Item]
+    skipped_lines: int
+    batch_id: str
+
+
+def _tz(cfg: C.Config) -> ZoneInfo:
     return ZoneInfo(cfg["taxonomy"]["timezone"])
 
 
-def _offset(cfg, now=None) -> str:
+def _offset(cfg: C.Config, now: datetime | None = None) -> str:
     s = (now or datetime.now(_tz(cfg))).strftime("%z")
     return f"{s[:3]}:{s[3:]}"
 
 
-def batch_id(cfg: dict, now: datetime | None = None) -> str:
+def batch_id(cfg: C.Config, now: datetime | None = None) -> str:
     """Local-time stamp shared by every item filed in one run."""
     return (now or datetime.now(_tz(cfg))).strftime("%Y-%m-%dT%H:%M")
 
 
-def prefilter(notes: list[dict], cfg: dict) -> tuple[list[dict], int]:
+def prefilter(notes: list[Change], cfg: C.Config) -> tuple[list[NoteLines], int]:
     """Choose the lines to translate and drop skip-keyword lines locally.
 
     New notes use the whole body; edited notes use only lines added since the last run.
@@ -83,16 +97,17 @@ def prefilter(notes: list[dict], cfg: dict) -> tuple[list[dict], int]:
     """
     kws = [k.lower() for k in cfg["filters"]["skip_keywords"] if k.strip()]
 
-    def skipped(text):
+    def skipped(text: str) -> bool:
         t = text.lower()
         return any(re.search(r"(?<!\w)" + re.escape(k) + r"(?!\w)", t) for k in kws)
 
-    out, n_skipped = [], 0
+    out: list[NoteLines] = []
+    n_skipped = 0
     for n in notes:
-        if kws and skipped(n.get("title", "")):
-            n_skipped += len((n.get("body") or "").splitlines())
+        if kws and skipped(n["title"]):
+            n_skipped += len(n["body"].splitlines())
             continue
-        lines = n["body"].splitlines() if n.get("is_new", True) else n.get("added_lines", [])
+        lines = n["body"].splitlines() if n["is_new"] else n["added_lines"]
         keep = []
         for ln in lines:
             if not ln.strip():
@@ -102,12 +117,13 @@ def prefilter(notes: list[dict], cfg: dict) -> tuple[list[dict], int]:
                 continue
             keep.append(ln)
         if keep:
-            out.append({"id": n["id"], "folder": n.get("folder", ""), "title": n.get("title", ""),
-                        "modified": n.get("modified", ""), "lines": keep})
+            out.append({"id": n["id"], "folder": n["folder"], "title": n["title"],
+                        "modified": n["modified"], "lines": keep})
     return out, n_skipped
 
 
-def build_messages(cfg: dict, notes: list[dict], now: datetime | None = None) -> tuple[str, str]:
+def build_messages(cfg: C.Config, notes: list[NoteLines],
+                   now: datetime | None = None) -> tuple[str, str]:
     tax, tr, flt = cfg["taxonomy"], cfg["translator"], cfg["filters"]
     now = now or datetime.now(_tz(cfg))
     expansions = ""
@@ -137,7 +153,14 @@ def build_messages(cfg: dict, notes: list[dict], now: datetime | None = None) ->
 
 # ---------- providers ----------
 
-def call_provider(cfg: dict, system: str, user: str) -> str:
+def _text(reply: object) -> str:
+    """The model's message text, or a clear error when a provider returns something else."""
+    if not isinstance(reply, str):
+        raise ValueError(f"Provider returned {type(reply).__name__}, expected text")
+    return reply
+
+
+def call_provider(cfg: C.Config, system: str, user: str) -> str:
     ai = cfg["ai"]
     if not ai["model"]:
         raise C.ConfigError("Set ai.model in your config (a current model id for your provider).")
@@ -153,7 +176,7 @@ def call_provider(cfg: dict, system: str, user: str) -> str:
         return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text")
     if provider == "openai":
         base = (ai["base_url"] or "https://api.openai.com/v1").rstrip("/")
-        headers = {}
+        headers: dict[str, str] = {}
         # A custom base_url with no api_key_env means a local OpenAI-compatible server
         # (LM Studio, vLLM) with no auth.
         if ai["api_key_env"] or not ai["base_url"]:
@@ -163,7 +186,7 @@ def call_provider(cfg: dict, system: str, user: str) -> str:
                                "response_format": {"type": "json_object"},
                                "messages": [{"role": "system", "content": system},
                                             {"role": "user", "content": user}]})
-        return r["choices"][0]["message"]["content"]
+        return _text(r["choices"][0]["message"]["content"])
     if provider == "ollama":
         base = (ai["base_url"] or "http://localhost:11434").rstrip("/")
         r = request_json("POST", f"{base}/api/chat", timeout=300,
@@ -171,13 +194,13 @@ def call_provider(cfg: dict, system: str, user: str) -> str:
                                "options": {"temperature": float(ai["temperature"])},
                                "messages": [{"role": "system", "content": system},
                                             {"role": "user", "content": user}]})
-        return r["message"]["content"]
+        return _text(r["message"]["content"])
     raise C.ConfigError(f"Unknown provider {provider!r}")
 
 
 # ---------- output cleaning ----------
 
-def parse_items(text: str) -> list[dict]:
+def parse_items(text: str) -> list[dict[str, Any]]:
     t = text.strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
     start, end = t.find("{"), t.rfind("}")
@@ -190,9 +213,14 @@ def parse_items(text: str) -> list[dict]:
     return [i for i in items if isinstance(i, dict)]
 
 
-def _scrub(s) -> str:
-    s = redact(str(s or "")).replace(REDACTED, "").strip()
-    return re.sub(r"\s{2,}", " ", s)
+def _scrub(s: object) -> str:
+    text = redact(str(s or "")).replace(REDACTED, "").strip()
+    return re.sub(r"\s{2,}", " ", text)
+
+
+def _pick(value: object, allowed: list[str], default: str) -> str:
+    """`value` when it is one of `allowed`, otherwise `default`."""
+    return value if isinstance(value, str) and value in allowed else default
 
 
 def _valid_iso(s: str) -> bool:
@@ -203,43 +231,48 @@ def _valid_iso(s: str) -> bool:
         return False
 
 
-def clean_items(raw: list[dict], cfg: dict, batch_id: str, note_ids: set) -> list[dict]:
+def clean_items(raw: list[dict[str, Any]], cfg: C.Config, batch: str,
+                note_ids: set[str]) -> list[Item]:
     tax = cfg["taxonomy"]
-    out = []
+    out: list[Item] = []
     for it in raw:
         name = _scrub(it.get("name"))[:200]
         if not name:
             continue
-        item = {"name": name, "batch_id": batch_id}
-        category = it.get("category")
-        item["category"] = category if category in tax["categories"] else tax["default_category"]
-        tt = it.get("task_type") or []
-        tt = tt if isinstance(tt, list) else [tt]
-        item["task_type"] = [t for t in tt if t in tax["task_types"]][:2]
-        item["priority"] = it.get("priority") if it.get("priority") in C.PRIORITIES else "Medium"
-        if it.get("effort") in C.EFFORTS:
-            item["effort"] = it["effort"]
-        item["item_type"] = it.get("item_type") if it.get("item_type") in C.ITEM_TYPES else "Task"
-        item["confidence"] = it.get("confidence") if it.get("confidence") in C.CONFIDENCE else "Low"
-        for k in ("due_date", "target_finish"):
-            v = str(it.get(k) or "")
-            if DATE_RE.match(v):
-                item[k] = v
+        raw_types = it.get("task_type") or []
+        types = raw_types if isinstance(raw_types, list) else [raw_types]
+        src = str(it.get("source_note_id") or "")
+        item: Item = {
+            "name": name, "batch_id": batch,
+            "category": _pick(it.get("category"), tax["categories"], tax["default_category"]),
+            "task_type": [t for t in types if t in tax["task_types"]][:2],
+            "priority": _pick(it.get("priority"), C.PRIORITIES, "Medium"),
+            "item_type": _pick(it.get("item_type"), C.ITEM_TYPES, "Task"),
+            "confidence": _pick(it.get("confidence"), C.CONFIDENCE, "Low"),
+            "needs_calendar": bool(it.get("needs_calendar")),
+            "source_note_id": src if src in note_ids else "",
+        }
+        effort = _pick(it.get("effort"), C.EFFORTS, "")
+        if effort:
+            item["effort"] = effort
+        due = str(it.get("due_date") or "")
+        if DATE_RE.match(due):
+            item["due_date"] = due
+        target = str(it.get("target_finish") or "")
+        if DATE_RE.match(target):
+            item["target_finish"] = target
         ev = str(it.get("event_time") or "")
         if ev and (DATE_RE.match(ev) or _valid_iso(ev)):
             item["event_time"] = ev
-        item["needs_calendar"] = bool(it.get("needs_calendar"))
         desc = _scrub(it.get("description"))
         if desc:
             item["description"] = desc[:1900]
-        src = str(it.get("source_note_id") or "")
-        item["source_note_id"] = src if src in note_ids else ""
         out.append(item)
     return out
 
 
-def translate(cfg: dict, changed_notes: list[dict], provider=None,
-              now: datetime | None = None) -> dict:
+def translate(cfg: C.Config, changed_notes: list[Change], provider: Provider | None = None,
+              now: datetime | None = None) -> Translation:
     """Full translation step. `provider(system, user) -> str` can be injected (tests, Hermes)."""
     notes_for_ai, skipped = prefilter(changed_notes, cfg)
     now = now or datetime.now(_tz(cfg))
